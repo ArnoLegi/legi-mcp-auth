@@ -1,0 +1,31 @@
+version: 2
+
+updates:
+  # Dépendances Python. Hebdomadaire : ce paquet garde les clés des quatre serveurs MCP
+  # du cabinet, une faille de PyJWT ou de cryptography doit être vue en jours, pas en
+  # mois. Le volume est faible (deux dépendances directes), le bruit reste tenable.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    labels:
+      - dependances
+      - securite
+
+  # Actions GitHub : une action tierce compromise s'exécute avec le jeton du dépôt.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    commit-message:
+      prefix: "chore(ci)"

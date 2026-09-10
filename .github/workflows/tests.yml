@@ -1,0 +1,106 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Lundi 6 h UTC : `pip-audit` doit tourner même sans commit. Une vulnérabilité
+    # publiée sur PyJWT ou cryptography n'attend pas notre prochaine modification.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 est le plancher déclaré dans pyproject ; la plus récente attrape les
+        # ruptures à venir. Les serveurs MCP du cabinet tournent sur 3.11.
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Installer le paquet et ses dépendances de développement
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: pytest
+        # Aucun test ne touche au réseau : la suite doit passer hors ligne, et vite.
+        run: pytest -q
+
+  audit:
+    name: Vulnérabilités des dépendances (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Installer le paquet
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "."
+          pip install pip-audit
+
+      - name: pip-audit
+        # Ce paquet garde les clés des quatre serveurs MCP du cabinet : une dépendance
+        # vulnérable ici est une vulnérabilité sur tous. Le job échoue volontairement,
+        # il ne se contente pas d'avertir.
+        run: pip-audit --strict --desc
+
+  secrets:
+    name: Aucun secret dans le dépôt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Chercher des valeurs Entra et des jetons committés
+        # Garde-fou complémentaire du .gitignore : un GUID de tenant, une chaîne
+        # ressemblant à un secret client ou un JWT n'ont rien à faire ici. Les valeurs
+        # factices des tests sont des répétitions de chiffres (11111111-…), ignorées.
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+
+          MOTIFS = {
+              "JWT": re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."),
+              "secret client Entra": re.compile(r"\b[A-Za-z0-9~._-]{3}8Q~[A-Za-z0-9~._-]{30,}"),
+              "GUID non factice": re.compile(
+                  r"\b(?!(\w)\1{7}-)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+                  re.I,
+              ),
+          }
+          IGNORES = {".git", ".venv", "__pycache__", ".pytest_cache"}
+          fautes = []
+          for chemin in pathlib.Path(".").rglob("*"):
+              if not chemin.is_file() or IGNORES & set(chemin.parts):
+                  continue
+              if chemin.suffix not in {".py", ".md", ".toml", ".yml", ".yaml", ".txt", ".json", ""}:
+                  continue
+              try:
+                  texte = chemin.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for nom, motif in MOTIFS.items():
+                  for trouve in motif.finditer(texte):
+                      fautes.append(f"{chemin}: {nom} -> {trouve.group()[:16]}...")
+          if fautes:
+              print("\n".join(fautes))
+              sys.exit("Des valeurs ressemblant a des secrets figurent dans le depot.")
+          print("Aucun secret detecte.")
+          PY

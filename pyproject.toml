@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legi-mcp-auth"
+version = "0.1.0"
+description = "Authentification OAuth 2.0 (Microsoft Entra ID) pour les serveurs MCP Starlette/FastMCP du cabinet"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Legi Conseils" }]
+keywords = ["mcp", "oauth2", "entra", "azure-ad", "starlette", "jwt"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: AsyncIO",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Security",
+]
+
+# Deux dépendances, et pas une de plus : ce paquet garde les clés de tous les serveurs
+# MCP du cabinet, chaque dépendance ajoutée est une surface d'attaque supplémentaire.
+#
+# Starlette n'y figure PAS volontairement : le paquet s'insère dans l'application
+# Starlette du serveur hôte, qui l'apporte donc déjà. L'installer ici risquerait de
+# tirer une version différente de celle du serveur.
+dependencies = [
+    "PyJWT[crypto]>=2.8,<3",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "starlette>=0.37",
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.24,<2",
+    "respx>=0.21",
+    "pip-audit>=2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArnoLegi/legi-mcp-auth"
+Issues = "https://github.com/ArnoLegi/legi-mcp-auth/issues"
+
+[tool.setuptools]
+packages = ["legi_mcp_auth"]
+
+[tool.setuptools.package-data]
+legi_mcp_auth = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning:legi_mcp_auth.*"]
