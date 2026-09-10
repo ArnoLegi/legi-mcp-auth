@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "legi-mcp-auth"
-version = "0.1.0"
+version = "0.1.1"
 description = "Authentification OAuth 2.0 (Microsoft Entra ID) pour les serveurs MCP Starlette/FastMCP du cabinet"
 readme = "README.md"
 requires-python = ">=3.11"

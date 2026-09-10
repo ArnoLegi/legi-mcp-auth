@@ -20,13 +20,13 @@ exactement comme avant, avec un avertissement au démarrage. C'est voulu : le pa
 ## Installation
 
 ```bash
-pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.0
+pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.1
 ```
 
 Dans un `requirements.txt` :
 
 ```
-legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.0
+legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.1
 ```
 
 Le tag est **épinglé volontairement**. Ne jamais écrire `@main` : le code
@@ -321,6 +321,13 @@ tenant du cabinet ne figure dans le dépôt.
 
 La CI ajoute `pip-audit` (vulnérabilités des dépendances) et Dependabot hebdomadaire :
 c'est le dépôt dont la sécurité compte le plus, il garde les clés des quatre serveurs.
+
+## Versions
+
+| Version | Contenu |
+|---|---|
+| `v0.1.1` | Correctif : une rotation de clé survenant dans les cinq minutes suivant le démarrage de la machine était bridée à tort (`time.monotonic()` part de zéro, et le sentinelle d'échec valait `0.0` — donc « échec à l'instant »). Sans effet en mode `off`. |
+| `v0.1.0` | Version initiale. **Ne pas utiliser** : contient le défaut ci-dessus. |
 
 ## Licence
 

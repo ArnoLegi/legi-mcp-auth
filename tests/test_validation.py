@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+from types import SimpleNamespace
 
 import httpx
 import jwt
@@ -236,3 +237,50 @@ async def test_jwks_vide(parametres, autorite: Autorite):
         cache = CacheJWKS(parametres.url_jwks, ttl=parametres.jwks_ttl)
         with pytest.raises(JWKSIndisponible):
             await cache.cle("cle-1")
+
+
+async def test_rotation_juste_apres_un_demarrage(parametres, autorite: Autorite, jwks, monkeypatch):
+    """Régression : une rotation de clé dans les 5 min suivant le démarrage doit passer.
+
+    `time.monotonic()` part de zéro au démarrage de la machine. Avec un sentinelle
+    d'échec à 0.0, toute rotation survenant pendant les cinq premières minutes d'uptime
+    était bridée — et c'est justement le moment le plus probable, puisque redémarrer un
+    serveur repart d'un cache JWKS vide.
+    """
+    # Machine fraîchement démarrée : `monotonic()` vaut une poignée de secondes. On
+    # remplace le module `time` VU PAR jwks.py, et non `time.monotonic` lui-même, qui
+    # est global au processus (asyncio s'en sert à chaque tour de boucle).
+    monkeypatch.setattr(
+        "legi_mcp_auth.jwks.time", SimpleNamespace(monotonic=lambda: 2.0)
+    )
+    cache = CacheJWKS(parametres.url_jwks, ttl=parametres.jwks_ttl)
+    validateur = ValidateurEntra(parametres, cache_jwks=cache)
+
+    await validateur.valider(autorite.jeton(kid="cle-1"))
+    autorite.publies.append("cle-2")
+    try:
+        assert await validateur.valider(autorite.jeton(kid="cle-2"))
+    finally:
+        autorite.publies.remove("cle-2")
+
+
+async def test_bridage_leve_apres_une_rotation_reussie(parametres, autorite: Autorite, jwks):
+    """Un échec puis une vraie rotation : le second `kid` inconnu doit être rechargé."""
+    cache = CacheJWKS(parametres.url_jwks, ttl=parametres.jwks_ttl)
+    validateur = ValidateurEntra(parametres, cache_jwks=cache)
+
+    with pytest.raises(JetonRefuse):  # kid inventé -> échec, bridage armé
+        await validateur.valider(autorite.jeton(kid="cle-2"))
+
+    autorite.publies.append("cle-2")
+    try:
+        # Le bridage empêche encore le rechargement...
+        with pytest.raises(JetonRefuse, match="bridé"):
+            await validateur.valider(autorite.jeton(kid="cle-2"))
+        # ... jusqu'à expiration du délai, simulée en remontant l'horodatage.
+        cache._dernier_echec -= 301.0
+        assert await validateur.valider(autorite.jeton(kid="cle-2"))
+        # Rotation réussie : le bridage est desarmé.
+        assert cache._dernier_echec is None
+    finally:
+        autorite.publies.remove("cle-2")

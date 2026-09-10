@@ -54,7 +54,11 @@ class CacheJWKS:
         self._client_propre = client is None
         self._cles: dict[str, Any] = {}
         self._charge_a: float = 0.0
-        self._dernier_echec: float = 0.0
+        # `None` = aucun échec à ce jour. Surtout PAS 0.0 : `time.monotonic()` part
+        # de zéro au démarrage de la machine, et un sentinelle à 0.0 briderait la
+        # première rotation de clé survenant dans les cinq minutes suivant un
+        # redémarrage — exactement le moment où elle est la plus probable.
+        self._dernier_echec: float | None = None
         self._verrou = asyncio.Lock()
 
     # ------------------------------------------------------------------ API
@@ -76,7 +80,10 @@ class CacheJWKS:
                 return cle
 
             # `kid` inconnu : très probablement une rotation de clé.
-            if time.monotonic() - self._dernier_echec < DELAI_APRES_ECHEC:
+            if (
+                self._dernier_echec is not None
+                and time.monotonic() - self._dernier_echec < DELAI_APRES_ECHEC
+            ):
                 raise CleInconnue(
                     f"kid={kid} inconnu et rafraîchissement bridé "
                     f"(un échec il y a moins de {DELAI_APRES_ECHEC:.0f} s)"
@@ -87,6 +94,8 @@ class CacheJWKS:
             if cle is None:
                 self._dernier_echec = time.monotonic()
                 raise CleInconnue(f"kid={kid} absent du JWKS après rafraîchissement")
+            # Rotation réussie : le bridage repart de zéro.
+            self._dernier_echec = None
             return cle
 
     async def aclose(self) -> None:

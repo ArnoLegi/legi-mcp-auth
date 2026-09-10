@@ -59,9 +59,10 @@ jobs:
 
       - name: pip-audit
         # Ce paquet garde les clés des quatre serveurs MCP du cabinet : une dépendance
-        # vulnérable ici est une vulnérabilité sur tous. Le job échoue volontairement,
+        # vulnérable ici est une vulnérabilité sur tous. `--skip-editable` écarte le paquet
+        # lui-même, qui n'est pas publié sur PyPI (installation par URL git). Le job échoue,
         # il ne se contente pas d'avertir.
-        run: pip-audit --strict --desc
+        run: pip-audit --strict --desc --skip-editable
 
   secrets:
     name: Aucun secret dans le dépôt

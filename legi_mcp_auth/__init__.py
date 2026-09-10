@@ -30,7 +30,7 @@ from .metadonnees import document as document_metadonnees
 from .middleware import EntraAuthMiddleware
 from .validation import JetonRefuse, ValidateurEntra
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "CHEMIN_METADONNEES",
