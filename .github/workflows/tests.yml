@@ -51,18 +51,24 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Installer le paquet
+      - name: Installer le paquet, puis figer ses dépendances tierces
+        # `pip-audit --strict` sur l'environnement échouerait sur legi-mcp-auth lui-même :
+        # il n'est pas publié sur PyPI, donc introuvable, et `--skip-editable` compte
+        # comme un saut, que `--strict` refuse. On audite donc la liste FIGÉE des
+        # dépendances tierces — exactement ce qui nous intéresse. pip-audit est installé
+        # après le gel, pour que ses propres dépendances n'entrent pas dans le lot.
         run: |
           python -m pip install --upgrade pip
-          pip install -e "."
+          pip install .
+          pip freeze --exclude legi-mcp-auth > dependances.txt
+          cat dependances.txt
           pip install pip-audit
 
       - name: pip-audit
         # Ce paquet garde les clés des quatre serveurs MCP du cabinet : une dépendance
-        # vulnérable ici est une vulnérabilité sur tous. `--skip-editable` écarte le paquet
-        # lui-même, qui n'est pas publié sur PyPI (installation par URL git). Le job échoue,
+        # vulnérable ici est une vulnérabilité sur tous. Le job échoue volontairement,
         # il ne se contente pas d'avertir.
-        run: pip-audit --strict --desc --skip-editable
+        run: pip-audit --strict --desc -r dependances.txt
 
   secrets:
     name: Aucun secret dans le dépôt
