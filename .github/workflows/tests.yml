@@ -22,7 +22,7 @@ jobs:
         # ruptures à venir. Les serveurs MCP du cabinet tournent sur 3.11.
         python: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
@@ -43,7 +43,7 @@ jobs:
     name: Vulnérabilités des dépendances (pip-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
@@ -74,7 +74,7 @@ jobs:
     name: Aucun secret dans le dépôt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Chercher des valeurs Entra et des jetons committés
         # Garde-fou complémentaire du .gitignore : un GUID de tenant, une chaîne
