@@ -113,7 +113,10 @@ ni expiration, ni révocation par Entra, ni identité — l'audit les journalise
 - au moins 32 caractères aléatoires (`secrets.token_urlsafe(32)`) ; en dessous, le
   paquet avertit au démarrage ;
 - un jeton distinct par serveur et par usage, jamais partagé ;
-- à faire tourner tous les six mois, et immédiatement après tout départ ;
+- à faire tourner tous les six mois, et immédiatement après tout départ — la
+  rotation se fait sur Railway (`MCP_ADMIN_TOKENS` accepte plusieurs valeurs, donc
+  sans coupure) et partout où le jeton est utilisé : sonde, configuration de
+  Claude Code ;
 - **jamais** dans le dépôt, dans un fichier `.env` versionné, ni dans un ticket.
 
 ---
@@ -217,32 +220,80 @@ qui permettra de dire qui a consulté quoi.
 
 ## Procédure de bascule
 
-L'ordre compte : activer l'authentification avant d'avoir un jeton en main coupe l'accès
-au serveur pour tout le monde, soi-même compris.
+Quatre temps, dans cet ordre. Le principe : **rien n'est activé en production avant
+qu'un appel d'outil ait réussi de bout en bout sur un service de préproduction.**
+Activer l'authentification avant d'avoir vu le flux fonctionner coupe l'accès à tout le
+monde, soi-même compris.
 
-1. **Côté Entra ID** — inscrire l'application, exposer une API `api://<client-id>` avec
-   la portée déléguée `mcp.access`, autoriser les applications clientes (Claude), et
-   assigner les utilisateurs ou le groupe.
-2. **Vérifier le mode off** — le paquet est déjà installé et branché, `MCP_AUTH_MODE`
-   absent. `/health` et `/mcp` répondent comme avant. C'est l'état actuel.
-3. **Générer un jeton administrateur** et le poser dans `MCP_ADMIN_TOKENS`, **avant**
-   d'activer le mode `entra`. C'est le filet de sécurité : la sonde et Claude Code
-   continueront de fonctionner même si la configuration Entra est fautive.
-4. **Poser les variables Entra** et `MCP_PUBLIC_URL`, puis `MCP_AUTH_MODE=entra`.
-   Redéployer.
-5. **Vérifier**, dans cet ordre :
-   - `GET /health` → 200 (sinon Railway déclarera le déploiement en échec) ;
-   - `GET /.well-known/oauth-protected-resource` → le document ci-dessus ;
-   - `POST /mcp` sans jeton → 401 avec l'en-tête `WWW-Authenticate` ;
-   - `POST /mcp` avec le jeton administrateur → 200 ;
-   - reconnexion du connecteur dans Claude.ai → flux OAuth, consentement, outils
-     disponibles.
-6. **Retour arrière** : `MCP_AUTH_MODE=off` et redéploiement. Une variable, un
-   redéploiement, aucune modification de code.
+### 1. Vérifier l'inscription d'application Entra ID
 
-Ne basculer les quatre serveurs qu'après validation complète sur EUR-Lex.
+Quatre points, et ce sont les quatre qui font échouer une bascule quand ils manquent.
 
----
+| À vérifier | Où | Valeur |
+|---|---|---|
+| **URI de redirection** | *Authentification* → plateforme *Web* | `https://claude.ai/api/mcp/auth_callback` — celui qu'affiche Claude.ai à la création du connecteur. Le recopier depuis l'écran, ne pas le deviner. |
+| **Portée exposée** | *Exposer une API* | ID d'application `api://<client-id>`, portée déléguée nommée exactement `mcp.access`, consentement *administrateurs et utilisateurs*. |
+| **`offline_access`** | *Autorisations d'API* → Microsoft Graph, déléguée | Sans elle, pas de jeton de rafraîchissement : le connecteur redemande une authentification toutes les heures. C'est l'oubli le plus courant, et il ne se voit qu'au bout d'une heure. |
+| **`accessTokenAcceptedVersion`** | *Manifeste* | `2`. À `null` (défaut), Entra émet des jetons v1.0 : `iss` vaut `https://sts.windows.net/<tenant>/`, que ce paquet refuse — il attend l'émetteur v2.0. Symptôme : 401 systématique, journal « émetteur invalide ». |
+
+Ajouter aussi `openid` et `profile` (déléguées), et assigner les utilisateurs ou le
+groupe si l'application exige une assignation.
+
+### 2. Éprouver sur un service de préproduction
+
+Ne pas éprouver sur un service que le cabinet utilise.
+
+1. Dans le projet Railway, créer un **second service** déployé depuis le **même dépôt**
+   que `mcp-eurlex`, même branche. Il aura sa propre URL
+   (`https://<service>-<projet>.up.railway.app`) et ses propres variables.
+2. Y poser `MCP_AUTH_MODE=entra`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`,
+   `MCP_PUBLIC_URL` = l'URL **de ce service de préproduction**, et
+   `MCP_ADMIN_TOKENS` — le filet de sécurité : il permet de tester le serveur même si
+   la configuration Entra est fautive.
+3. Vérifier à la main, dans cet ordre :
+   - `GET /health` → 200 (sinon Railway déclare le déploiement en échec et redémarre) ;
+   - `GET /.well-known/oauth-protected-resource` → le document attendu, avec la bonne
+     `resource` et la bonne portée ;
+   - `POST /mcp` sans jeton → 401 portant `WWW-Authenticate` ;
+   - `POST /mcp` avec le jeton administrateur → 200.
+4. Créer dans Claude.ai un **connecteur de test** pointant sur ce service, avec le
+   Client ID et le secret client de l'inscription. Se connecter : l'écran Microsoft
+   doit apparaître, le consentement être demandé une fois.
+5. **Appeler un outil** depuis une conversation, et obtenir une réponse. C'est le seul
+   critère de succès : tant qu'un outil n'a pas répondu après l'écran Microsoft, la
+   bascule n'est pas prête. Vérifier au passage la ligne d'audit
+   `utilisateur=<upn> outil=<nom>` dans les journaux Railway.
+
+Un échec ici se corrige sur la préproduction, sans que personne ne s'en aperçoive.
+
+### 3. Basculer la production, un service à la fois
+
+Dans l'ordre : `mcp-eurlex`, puis `mcp-inpi`, `mcp-joafe`, `mcp-distribution`. Pour
+chacun, et **seulement une fois le précédent validé** :
+
+1. Poser les variables sur le service Railway — `MCP_PUBLIC_URL` étant l'URL **de ce
+   service-là**, jamais celle d'un autre, et `MCP_ADMIN_TOKENS` un jeton propre à ce
+   serveur. Redéployer.
+2. Vérifier le 401 et les métadonnées comme en préproduction.
+3. **Éditer le connecteur Claude.ai correspondant** : y renseigner le Client ID et le
+   secret client. Un connecteur qui n'a pas été édité continuera d'appeler sans jeton
+   et recevra des 401 — l'authentification ne se propage pas toute seule aux
+   connecteurs existants.
+4. Reconnecter, consentir, appeler un outil.
+
+`mcp-distribution` demande une décision préalable : il porte déjà sa propre
+authentification par jeton (`mcp_auth`, `MCPDIST_ADMIN_TOKEN`). Les deux couches ne
+peuvent pas être actives ensemble — elles liraient le même en-tête `Authorization` et se
+refuseraient mutuellement les jetons. Retirer l'une des deux avant de basculer.
+
+### 4. Retour arrière
+
+`MCP_AUTH_MODE=off` sur le service concerné, redéploiement. Une variable, un
+redéploiement, aucune modification de code, aucun retour en arrière sur les dépôts. Les
+autres variables peuvent rester en place : elles ne sont plus lues.
+
+Le connecteur Claude.ai, lui, reste configuré avec son Client ID — sans effet, le
+serveur n'exigeant plus rien.
 
 ## Rotation du secret, et son expiration
 
@@ -262,21 +313,42 @@ trouver.
 
 | Élément | Durée | Effet à l'expiration |
 |---|---|---|
-| Secret client Entra | 6 à 24 mois, au choix | Les clients n'obtiennent plus de jeton. Le serveur, lui, va bien. |
+| Secret client Entra | 6 à 24 mois, au choix | Les clients n'obtiennent plus de jeton : **chaque connecteur Claude.ai** tombe. Le serveur, lui, va bien. |
 | Jeton d'accès | ~1 h | Le client le renouvelle seul avec son jeton de rafraîchissement. |
 | Clés de signature Microsoft | rotation régulière, sans préavis | **Aucun** : le `kid` inconnu déclenche un rechargement automatique du JWKS. |
 | Jeton administrateur | jamais | Aucun. C'est bien le problème : à faire tourner à la main. |
 
 ### Rotation d'un secret client Entra
 
-À faire **avant** l'expiration ; Entra permet deux secrets valides simultanément.
+À faire **avant** l'expiration ; Entra permet deux secrets valides simultanément, et
+c'est ce recouvrement qui évite toute coupure.
+
+Le point à retenir : **la rotation touche deux endroits, et le second s'oublie.**
+
+| Où | Quoi | Pourquoi |
+|---|---|---|
+| **Railway** | Rien, pour le secret client. Éventuellement `MCP_ADMIN_TOKENS`, qui suit son propre calendrier. | Le serveur MCP est une *ressource* : il ne détient aucun secret Entra, il ne vérifie que des signatures avec des clés publiques. |
+| **Chaque connecteur Claude.ai** | Le nouveau secret client, **connecteur par connecteur** | C'est le *client* qui présente le secret à Entra pour obtenir un jeton. Quatre serveurs = jusqu'à quatre connecteurs à éditer, plus les connecteurs de test. Un connecteur oublié cesse de fonctionner à l'expiration de l'ancien secret, et lui seul. |
+
+Marche à suivre :
 
 1. Portail Entra → l'inscription d'application → *Certificats & secrets* → nouveau
-   secret, durée 12 mois, noter la date de fin.
-2. Poser le nouveau secret **là où il est utilisé** (le client), pas sur le serveur MCP.
-3. Vérifier une connexion complète depuis Claude.ai.
-4. Supprimer l'ancien secret dans le portail.
-5. Poser un rappel de calendrier deux mois avant la prochaine échéance.
+   secret, durée 12 mois, noter la date de fin **et la valeur** (elle n'est affichée
+   qu'une fois).
+2. **Éditer chaque connecteur Claude.ai** qui pointe vers un serveur MCP du cabinet et
+   y remplacer le secret client. Faire la liste avant de commencer : un connecteur
+   oublié tombera silencieusement, à l'expiration de l'ancien secret, c'est-à-dire des
+   semaines plus tard et sans lien apparent avec ce geste.
+3. Reconnecter et **appeler un outil** sur chaque connecteur édité. Un connecteur qui
+   détient encore un jeton valide semble fonctionner sans avoir été mis à jour : le
+   test n'est probant qu'après une reconnexion.
+4. Supprimer l'ancien secret dans le portail — seulement une fois l'étape 3 faite
+   partout.
+5. Poser un rappel de calendrier **deux mois** avant la prochaine échéance.
+
+Si l'ancien secret expire avant d'avoir été remplacé : le symptôme est
+`invalid_client` / `AADSTS7000222` **côté Claude.ai**, jamais un 401 de notre part. Rien
+à corriger sur Railway ni dans le code — un nouveau secret et l'étape 2 suffisent.
 
 ### Rotation d'un jeton administrateur
 
