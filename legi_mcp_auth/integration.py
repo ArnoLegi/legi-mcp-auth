@@ -13,7 +13,7 @@ from typing import Any
 
 from starlette.applications import Starlette
 
-from .config import MODE_ENTRA, ParametresAuth, parametres_depuis_env
+from .config import MODE_ENTRA, MODE_JETONS, ParametresAuth, parametres_depuis_env
 from .metadonnees import routes as routes_metadonnees
 from .middleware import EntraAuthMiddleware
 from .validation import ValidateurEntra
@@ -50,26 +50,40 @@ def proteger(
     if not parametres.actif:
         log.warning(
             "AUTHENTIFICATION DÉSACTIVÉE (MCP_AUTH_MODE=%s) : les endpoints MCP sont "
-            "publics. Renseignez MCP_AUTH_MODE=%s, ENTRA_TENANT_ID, ENTRA_CLIENT_ID et "
-            "MCP_PUBLIC_URL pour exiger un jeton Microsoft Entra ID.",
+            "publics. Posez MCP_AUTH_MODE=%s (jetons d'administration seuls) ou "
+            "MCP_AUTH_MODE=%s (jetons Microsoft Entra ID, avec ENTRA_TENANT_ID, "
+            "ENTRA_CLIENT_ID et MCP_PUBLIC_URL) pour exiger un jeton.",
             parametres.mode,
+            MODE_JETONS,
             MODE_ENTRA,
         )
         return app
 
-    # Les métadonnées passent DEVANT les routes existantes : le serveur ne doit pas
-    # pouvoir masquer la découverte OAuth avec une route générique.
-    app.router.routes[0:0] = routes_metadonnees(parametres)
+    if parametres.entra_actif:
+        # Les métadonnées passent DEVANT les routes existantes : le serveur ne doit pas
+        # pouvoir masquer la découverte OAuth avec une route générique. En mode
+        # « jetons », il n'y a aucune autorité : pas de métadonnées à servir, et le 401
+        # ne renvoie vers aucune adresse de découverte.
+        app.router.routes[0:0] = routes_metadonnees(parametres)
+
     app.add_middleware(EntraAuthMiddleware, parametres=parametres, validateur=validateur)
 
-    log.info(
-        "Authentification Entra ID ACTIVE — tenant=%s audience=%s portée=%s "
-        "groupes=%s jetons_admin=%d ressource=%s",
-        parametres.tenant_id,
-        parametres.audience_uri,
-        parametres.scope_complet,
-        ", ".join(parametres.groupes_autorises) or "tous",
-        len(parametres.jetons_admin),
-        parametres.url_publique,
-    )
+    if parametres.entra_actif:
+        log.info(
+            "Authentification Entra ID ACTIVE — tenant=%s audience=%s portée=%s "
+            "groupes=%s jetons_admin=%d ressource=%s",
+            parametres.tenant_id,
+            parametres.audience_uri,
+            parametres.scope_complet,
+            ", ".join(parametres.groupes_autorises) or "tous",
+            len(parametres.jetons_admin),
+            parametres.url_publique,
+        )
+    else:
+        log.info(
+            "Authentification par JETONS ACTIVE — %d jeton(s) d'administration acceptés, "
+            "aucune autorité OAuth. Tout appel hors /health et /.well-known exige un "
+            "jeton en Authorization: Bearer.",
+            len(parametres.jetons_admin),
+        )
     return app

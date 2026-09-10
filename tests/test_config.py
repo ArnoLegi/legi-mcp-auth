@@ -95,8 +95,14 @@ def test_valeurs_derivees():
     assert set(p.audiences_acceptees) == {CLIENT_ID, f"api://{CLIENT_ID}"}
 
 
-def test_jeton_admin_court_avertit(monkeypatch, caplog):
-    monkeypatch.setenv("MCP_ADMIN_TOKENS", "court")
+def test_jetons_admin_inutiles_en_mode_off(monkeypatch, caplog):
+    """En mode off, des jetons configurés ne protègent rien : il faut le dire.
+
+    (La longueur des jetons, elle, est contrôlée là où elle compte : erreur bloquante
+    en mode « jetons », avertissement en mode « entra ». Cf. test_mode_jetons.py.)
+    """
+    monkeypatch.setenv("MCP_ADMIN_TOKENS", "a" * 40)
     with caplog.at_level("WARNING"):
-        parametres_depuis_env()
-    assert "trop court" in caplog.text
+        parametres = parametres_depuis_env()
+    assert parametres.actif is False
+    assert "ne servent à rien" in caplog.text

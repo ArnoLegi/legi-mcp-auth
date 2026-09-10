@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 log = logging.getLogger("legi_mcp_auth.config")
 
 MODE_OFF = "off"
+MODE_JETONS = "jetons"
 MODE_ENTRA = "entra"
-MODES = (MODE_OFF, MODE_ENTRA)
+MODES = (MODE_OFF, MODE_JETONS, MODE_ENTRA)
 
 #: Autorité Microsoft Entra ID (nuage public). Les nuages souverains (Chine, US Gov)
 #: utilisent d'autres hôtes ; ils ne sont pas gérés ici, faute d'usage au cabinet.
@@ -66,6 +67,18 @@ class ParametresAuth:
 
     @property
     def actif(self) -> bool:
+        """Vrai si une authentification est exigée — donc si le middleware s'installe."""
+        return self.mode in (MODE_JETONS, MODE_ENTRA)
+
+    @property
+    def entra_actif(self) -> bool:
+        """Vrai si les jetons Microsoft Entra ID sont validés.
+
+        Distinct de `actif` : en mode « jetons », le middleware s'installe et refuse
+        tout ce qui n'est pas un jeton d'administration, sans qu'aucune autorité
+        OAuth n'existe — donc sans JWKS, sans métadonnées et sans `resource_metadata`
+        dans le 401.
+        """
         return self.mode == MODE_ENTRA
 
     # ------------------------------------------------------- valeurs dérivées
@@ -155,15 +168,6 @@ def parametres_depuis_env() -> ParametresAuth:
         )
 
     jetons_admin = _liste("MCP_ADMIN_TOKENS")
-    for jeton in jetons_admin:
-        if len(jeton) < LONGUEUR_MINI_JETON_ADMIN:
-            log.warning(
-                "MCP_ADMIN_TOKENS contient un jeton de %d caractères : trop court pour "
-                "résister à une attaque en ligne. Utilisez au moins %d caractères "
-                "aléatoires (python -c \"import secrets; print(secrets.token_urlsafe(32))\").",
-                len(jeton),
-                LONGUEUR_MINI_JETON_ADMIN,
-            )
 
     parametres = ParametresAuth(
         mode=mode,
@@ -187,7 +191,50 @@ def parametres_depuis_env() -> ParametresAuth:
 
 
 def verifier(parametres: ParametresAuth) -> None:
-    """Vérifie qu'un jeu de paramètres en mode « entra » est exploitable."""
+    """Vérifie qu'un jeu de paramètres actif est exploitable, ou lève."""
+    if parametres.mode == MODE_JETONS:
+        _verifier_jetons(parametres)
+    elif parametres.mode == MODE_ENTRA:
+        _verifier_entra(parametres)
+
+
+def _verifier_jetons(parametres: ParametresAuth) -> None:
+    """Mode « jetons » : la liste de jetons EST toute la sécurité du serveur.
+
+    Aucune tolérance ici, contrairement au mode « entra » où les jetons ne sont qu'un
+    filet de secours à côté de l'autorité : une liste vide ouvrirait le serveur à
+    personne (tout serait refusé, panne totale), et un jeton court l'ouvrirait à qui
+    prend le temps d'essayer. Les deux cas empêchent le démarrage.
+    """
+    if not parametres.jetons_admin:
+        raise ConfigurationAuthInvalide(
+            "MCP_AUTH_MODE=jetons exige MCP_ADMIN_TOKENS : sans jeton, aucun appel ne "
+            "pourrait aboutir. Générez-en un avec "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\"."
+        )
+    courts = [len(j) for j in parametres.jetons_admin if len(j) < LONGUEUR_MINI_JETON_ADMIN]
+    if courts:
+        raise ConfigurationAuthInvalide(
+            f"MCP_ADMIN_TOKENS contient {len(courts)} jeton(s) de moins de "
+            f"{LONGUEUR_MINI_JETON_ADMIN} caractères (le plus court : {min(courts)}). "
+            "En mode jetons, c'est la seule barrière : elle doit résister à une attaque "
+            "en ligne. Utilisez secrets.token_urlsafe(32)."
+        )
+
+
+def _verifier_entra(parametres: ParametresAuth) -> None:
+    """Mode « entra » : l'autorité et l'URL publique sont indispensables."""
+    for jeton in parametres.jetons_admin:
+        if len(jeton) < LONGUEUR_MINI_JETON_ADMIN:
+            # Simple avertissement ici : l'autorité Entra reste la voie normale, ces
+            # jetons ne sont qu'un accès de service. En mode « jetons », c'est une erreur.
+            log.warning(
+                "MCP_ADMIN_TOKENS contient un jeton de %d caractères : trop court pour "
+                "résister à une attaque en ligne. Utilisez au moins %d caractères "
+                "aléatoires (python -c \"import secrets; print(secrets.token_urlsafe(32))\").",
+                len(jeton),
+                LONGUEUR_MINI_JETON_ADMIN,
+            )
     manquants = [
         nom
         for nom, valeur in (

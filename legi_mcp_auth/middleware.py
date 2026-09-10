@@ -31,10 +31,16 @@ PREFIXES_EXEMPTES: tuple[str, ...] = ("/.well-known/",)
 #: n'est alors PAS tamponné). Un message JSON-RPC MCP pèse quelques kilo-octets.
 TAILLE_MAX_AUDIT = 256 * 1024
 
-MESSAGE_401 = (
+MESSAGE_401_ENTRA = (
     "Jeton d'accès absent ou invalide. Ce serveur MCP exige un jeton Bearer émis par "
     "Microsoft Entra ID. Voir le document de métadonnées indiqué par l'en-tête "
     "WWW-Authenticate pour l'autorité et la portée à demander."
+)
+
+MESSAGE_401_JETONS = (
+    "Jeton absent ou invalide. Ce serveur MCP exige un jeton d'administration présenté "
+    "en Authorization: Bearer. Il n'y a pas de flux OAuth à suivre : le jeton est "
+    "délivré par l'administrateur du serveur."
 )
 
 
@@ -52,7 +58,12 @@ class EntraAuthMiddleware:
     ) -> None:
         self.app = app
         self.parametres = parametres
-        self.validateur = validateur or ValidateurEntra(parametres)
+        # En mode « jetons », aucun validateur : pas d'autorité, donc pas de JWKS à
+        # télécharger ni de client HTTP à ouvrir. Le construire quand même serait
+        # inutile, et il pointerait vers une URL de tenant vide.
+        if validateur is None and parametres.entra_actif:
+            validateur = ValidateurEntra(parametres)
+        self.validateur = validateur
         self.chemins_exemptes = tuple(chemins_exemptes)
         self.prefixes_exemptes = tuple(prefixes_exemptes)
 
@@ -79,7 +90,7 @@ class EntraAuthMiddleware:
 
         if self._est_jeton_admin(jeton):
             utilisateur: dict[str, Any] = {"admin": True}
-        else:
+        elif self.validateur is not None:
             try:
                 revendications = await self.validateur.valider(jeton)
             except JetonRefuse as exc:
@@ -88,6 +99,13 @@ class EntraAuthMiddleware:
                 await self._refuser(send)
                 return
             utilisateur = utilisateur_depuis_revendications(revendications)
+        else:
+            # Mode « jetons » : rien d'autre à essayer, la liste est la seule référence.
+            log.warning(
+                "401 %s %s : jeton inconnu (mode jetons)", scope.get("method"), chemin
+            )
+            await self._refuser(send)
+            return
 
         scope.setdefault("state", {})["utilisateur"] = utilisateur
 
@@ -132,23 +150,34 @@ class EntraAuthMiddleware:
     # -------------------------------------------------------------- réponses
 
     async def _refuser(self, send: Callable) -> None:
-        """401 conforme au brouillon MCP « Authorization » et à la RFC 6750."""
+        """401 conforme au brouillon MCP « Authorization » et à la RFC 6750.
+
+        En mode « entra », le 401 porte de quoi découvrir le flux OAuth :
+        `resource_metadata` et `scope`. En mode « jetons », il ne les porte PAS — il
+        n'existe aucune autorité, aucune métadonnée à servir et aucune portée à
+        demander. Annoncer une adresse de découverte qui répondrait 404 enverrait les
+        clients dans un flux impossible.
+        """
         p = self.parametres
-        entete = (
-            f'Bearer resource_metadata="{p.url_metadonnees}", '
-            f'scope="{p.scope_complet}", '
-            f'error="invalid_token"'
-        )
-        corps = json.dumps(
-            {
+        if p.entra_actif:
+            entete = (
+                f'Bearer resource_metadata="{p.url_metadonnees}", '
+                f'scope="{p.scope_complet}", '
+                f'error="invalid_token"'
+            )
+            charge = {
                 "error": "invalid_token",
-                "error_description": MESSAGE_401,
+                "error_description": MESSAGE_401_ENTRA,
                 "resource_metadata": p.url_metadonnees,
                 "scope": p.scope_complet,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ).encode("utf-8")
+            }
+        else:
+            entete = 'Bearer error="invalid_token"'
+            charge = {
+                "error": "invalid_token",
+                "error_description": MESSAGE_401_JETONS,
+            }
+        corps = json.dumps(charge, ensure_ascii=False, indent=2).encode("utf-8")
         await send(
             {
                 "type": "http.response.start",

@@ -10,7 +10,7 @@ d'accès délivré par l'annuaire Entra ID du cabinet, publie les métadonnées 
 au client (Claude.ai, Claude Code) de découvrir seul le flux OAuth, et journalise qui
 appelle quel outil.
 
-**Il ne fait rien tant qu'il n'est pas configuré.** Sans `MCP_AUTH_MODE=entra`, le
+**Il ne fait rien tant qu'il n'est pas configuré.** Sans `MCP_AUTH_MODE`, le
 branchement est neutre : aucun middleware, aucune route ajoutée, le serveur se comporte
 exactement comme avant, avec un avertissement au démarrage. C'est voulu : le paquet peut
 être installé sur les quatre serveurs bien avant que le tenant Entra ne soit prêt.
@@ -20,13 +20,13 @@ exactement comme avant, avec un avertissement au démarrage. C'est voulu : le pa
 ## Installation
 
 ```bash
-pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.1
+pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.2.0
 ```
 
 Dans un `requirements.txt` :
 
 ```
-legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.1.1
+legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.2.0
 ```
 
 Le tag est **épinglé volontairement**. Ne jamais écrire `@main` : le code
@@ -75,18 +75,76 @@ utilisateur = request.state.utilisateur
 
 ---
 
+## Les trois modes
+
+`MCP_AUTH_MODE` décide de tout. Un mode n'est pas un réglage de confort : c'est le choix
+de qui peut appeler le serveur.
+
+| Mode | Qui est accepté | Configuration exigée | Métadonnées OAuth |
+|---|---|---|---|
+| `off` *(défaut)* | tout le monde | aucune | aucune |
+| `jetons` | les porteurs d'un jeton de `MCP_ADMIN_TOKENS` | `MCP_ADMIN_TOKENS` seule | aucune |
+| `entra` | les utilisateurs du tenant, plus les jetons d'administration | tenant, client ID, URL publique | publiées |
+
+### `off` — le développement, et rien d'autre
+
+Le serveur est ouvert. C'est l'état d'un poste de travail, d'un serveur qui n'expose
+aucune donnée du cabinet, ou d'un dépôt où le paquet vient d'être branché et attend sa
+configuration. Un avertissement le rappelle à chaque démarrage, en majuscules, pour
+qu'un serveur oublié dans cet état finisse par se faire remarquer.
+
+Jamais en production sur un serveur qui sert du contenu du cabinet.
+
+### `jetons` — un serveur à usage restreint, ou une préproduction
+
+Seuls les jetons de `MCP_ADMIN_TOKENS` passent, comparés en temps constant. Rien
+d'autre : ni tenant, ni inscription d'application, ni flux OAuth, ni métadonnées. Le 401
+ne porte **pas** de `resource_metadata` — il n'y a aucune autorité vers laquelle
+renvoyer un client, et annoncer une adresse de découverte qui répondrait 404 enverrait
+les clients MCP dans un flux impossible à mener.
+
+Deux usages :
+
+- **un serveur à usage restreint** : un seul utilisateur, ou un serveur appelé par la
+  sonde et par Claude Code plutôt que par le cabinet. Le jeton se colle dans la
+  configuration du connecteur, et c'est tout ;
+- **une préproduction**, le temps que l'inscription Entra existe et fonctionne.
+
+Ce que ce mode ne donne pas, et qu'il faut avoir en tête : aucune identité (l'audit
+journalise `utilisateur=admin`, sans dire qui), aucune expiration, aucune révocation
+centralisée. Un jeton est un mot de passe permanent. C'est suffisant pour un accès de
+service, insuffisant pour tracer qui a consulté quoi.
+
+Le paquet **refuse de démarrer** si `MCP_ADMIN_TOKENS` est vide ou si l'un des jetons
+fait moins de 32 caractères : dans ce mode, cette liste est la seule barrière, il n'y a
+pas d'autorité derrière pour rattraper une faiblesse.
+
+### `entra` — la production
+
+Les jetons sont délivrés par l'annuaire Entra ID du cabinet et validés contre le JWKS du
+tenant. C'est le seul mode qui donne une identité par appel (`oid`,
+`preferred_username`), une expiration, une révocation par l'annuaire, un filtrage par
+groupe, et un audit d'accès qui nomme les personnes. Les métadonnées de ressource
+protégée sont publiées, et Claude.ai mène le flux OAuth tout seul.
+
+Les jetons de `MCP_ADMIN_TOKENS` restent acceptés à côté — pour la sonde et Claude Code,
+qui n'ont pas d'identité Entra. Un jeton court n'y est qu'un avertissement, l'annuaire
+restant la voie normale.
+
+---
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `MCP_AUTH_MODE` | `off` | `off` (neutre) ou `entra` (protection active). Une valeur inconnue **fait échouer le démarrage** : une faute de frappe ne doit pas désactiver l'authentification en silence. |
-| `ENTRA_TENANT_ID` | — | GUID de l'annuaire. **Obligatoire** en mode `entra`. |
-| `ENTRA_CLIENT_ID` | — | GUID de l'inscription d'application exposant l'API MCP. **Obligatoire.** |
+| `MCP_AUTH_MODE` | `off` | `off` (neutre), `jetons` ou `entra`. Une valeur inconnue **fait échouer le démarrage** : une faute de frappe ne doit pas désactiver l'authentification en silence. |
+| `ENTRA_TENANT_ID` | — | GUID de l'annuaire. **Obligatoire** en mode `entra`, inutile en mode `jetons`. |
+| `ENTRA_CLIENT_ID` | — | GUID de l'inscription d'application exposant l'API MCP. **Obligatoire** en mode `entra`. |
 | `ENTRA_AUDIENCE` | `ENTRA_CLIENT_ID` | Audience attendue. `api://<client-id>` est **aussi accepté** dans tous les cas : Entra émet l'une ou l'autre forme selon le manifeste. |
 | `ENTRA_SCOPE_REQUIS` | `mcp.access` | Portée déléguée exigée dans `scp`. |
 | `ENTRA_GROUPES_AUTORISES` | — | GUID de groupes séparés par des virgules. Vide = tout utilisateur du tenant porteur de la portée. |
-| `MCP_PUBLIC_URL` | — | URL publique du serveur, sans barre finale, en HTTPS. **Obligatoire** : c'est le `resource` des métadonnées. Ex. `https://mcp-eurlex-production.up.railway.app`. |
-| `MCP_ADMIN_TOKENS` | — | Jetons statiques acceptés tels quels en `Authorization: Bearer`, séparés par des virgules. Comparaison en temps constant. |
+| `MCP_PUBLIC_URL` | — | URL publique du serveur, sans barre finale, en HTTPS. **Obligatoire** en mode `entra` : c'est le `resource` des métadonnées. Ex. `https://mcp-eurlex-production.up.railway.app`. |
+| `MCP_ADMIN_TOKENS` | — | Jetons statiques acceptés tels quels en `Authorization: Bearer`, séparés par des virgules. Comparaison en temps constant. **Obligatoire** en mode `jetons`, où 32 caractères minimum sont exigés. |
 
 Toutes les valeurs sont nettoyées des espaces et des guillemets parasites : coller
 `ENTRA_CLIENT_ID="xxx"` dans Railway est l'erreur la plus fréquente, et la plus longue à
@@ -146,6 +204,11 @@ le journal. Configurer l'application pour n'émettre que les **groupes assignés
 ---
 
 ## La réponse 401
+
+Voici la forme du mode `entra`. En mode `jetons`, l'en-tête se réduit à
+`Bearer error="invalid_token"` et le corps aux deux champs `error` et
+`error_description` : sans autorité, il n'y a ni `resource_metadata` ni `scope` à
+annoncer.
 
 Aucun détail sur la cause du refus n'apparaît dans la réponse : un attaquant apprendrait
 à chaque essai ce qu'il doit corriger. Le motif exact est dans le journal
@@ -398,6 +461,7 @@ c'est le dépôt dont la sécurité compte le plus, il garde les clés des quatr
 
 | Version | Contenu |
 |---|---|
+| `v0.2.0` | Nouveau mode `MCP_AUTH_MODE=jetons` : les jetons d'administration seuls, sans configuration Entra ni métadonnées OAuth, pour un serveur à usage restreint ou une préproduction. Refuse de démarrer si la liste est vide ou si un jeton fait moins de 32 caractères. Aucun changement de comportement pour les modes `off` et `entra`. |
 | `v0.1.1` | Correctif : une rotation de clé survenant dans les cinq minutes suivant le démarrage de la machine était bridée à tort (`time.monotonic()` part de zéro, et le sentinelle d'échec valait `0.0` — donc « échec à l'instant »). Sans effet en mode `off`. |
 | `v0.1.0` | Version initiale. **Ne pas utiliser** : contient le défaut ci-dessus. |
 
