@@ -1,9 +1,14 @@
 """Authentification OAuth 2.0 (Microsoft Entra ID) pour les serveurs MCP du cabinet.
 
 Un serveur MCP exposé sur Internet sans authentification est une base de données du
-cabinet ouverte à qui connaît l'URL. Ce paquet ferme les endpoints `/mcp` et `/sse`
-derrière un jeton d'accès Entra ID, et publie les métadonnées qui permettent au client
-(Claude.ai, Claude Code) de découvrir seul l'autorité et la portée à demander.
+cabinet ouverte à qui connaît l'URL. Ce paquet ferme le serveur derrière un jeton
+d'accès Entra ID, et publie les métadonnées qui permettent au client (Claude.ai, Claude
+Code) de découvrir seul l'autorité et la portée à demander.
+
+La ressource protégée, au sens de la RFC 8707, est unique : `<MCP_PUBLIC_URL>/mcp`. La
+portée publiée se bâtit sur elle — `<resource>/<portée>` — et non sur
+`api://<client-id>`, faute de quoi Entra refuse la demande d'autorisation par
+AADSTS9010010.
 
 Branchement, dans le `main.py` du serveur :
 
@@ -24,6 +29,7 @@ from __future__ import annotations
 
 from .config import (
     CHEMIN_METADONNEES,
+    CHEMIN_RESSOURCE,
     MODE_ENTRA,
     MODE_JETONS,
     MODE_OFF,
@@ -37,10 +43,11 @@ from .metadonnees import document as document_metadonnees
 from .middleware import EntraAuthMiddleware
 from .validation import JetonRefuse, ValidateurEntra
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "CHEMIN_METADONNEES",
+    "CHEMIN_RESSOURCE",
     "CacheJWKS",
     "CleInconnue",
     "ConfigurationAuthInvalide",

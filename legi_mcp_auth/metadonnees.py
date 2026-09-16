@@ -5,11 +5,16 @@ portant `resource_metadata=...`, lit ce document, y trouve l'autorité Entra ID 
 portée à demander, puis lance le flux OAuth tout seul. Sans lui, chaque utilisateur
 devrait être configuré à la main.
 
-Deux chemins sont servis, parce que les clients diffèrent sur la ressource qu'ils
-considèrent : la racine du serveur, ou l'URL du transport (`/mcp`). La RFC construit
-l'URL des métadonnées en insérant `/.well-known/oauth-protected-resource` AVANT le
-chemin de la ressource — d'où `/.well-known/oauth-protected-resource/mcp` pour la
-ressource `<serveur>/mcp`.
+Il n'y a qu'UNE ressource — `<MCP_PUBLIC_URL>/mcp`, l'URL du transport, celle que le
+client envoie à Entra dans le paramètre `resource` (RFC 8707) — donc qu'UN document. La
+RFC 9728 construit l'URL de ce document en insérant `/.well-known/oauth-protected-resource`
+AVANT le chemin de la ressource : il vit donc sous
+`/.well-known/oauth-protected-resource/mcp`.
+
+La route racine `/.well-known/oauth-protected-resource` est conservée, mais elle sert
+EXACTEMENT le même document canonique (`resource` = `…/mcp`), sans redirection : c'est
+uniquement pour les clients qui sondent la racine avant d'essayer le chemin correct.
+Les servir tous les deux évite un 404 sans jamais annoncer deux ressources différentes.
 """
 from __future__ import annotations
 
@@ -18,14 +23,16 @@ from typing import Any
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .config import CHEMIN_METADONNEES, ParametresAuth
+from .config import CHEMIN_METADONNEES, CHEMIN_RESSOURCE, ParametresAuth
 
 
-def document(parametres: ParametresAuth, chemin_ressource: str = "") -> dict[str, Any]:
-    """Document de métadonnées pour la ressource `<url publique><chemin_ressource>`."""
+def document(parametres: ParametresAuth) -> dict[str, Any]:
+    """Document de métadonnées de l'unique ressource, `parametres.resource_canonique`."""
     return {
-        "resource": f"{parametres.url_publique}{chemin_ressource}",
+        "resource": parametres.resource_canonique,
         "authorization_servers": [parametres.issuer],
+        # La portée telle qu'elle est demandable POUR CETTE RESSOURCE : `<resource>/<portée>`.
+        # La même valeur, au caractère près, que le paramètre `scope` du 401.
         "scopes_supported": [parametres.scope_complet],
         "bearer_methods_supported": ["header"],
         "resource_documentation": f"{parametres.url_publique}/health",
@@ -35,21 +42,18 @@ def document(parametres: ParametresAuth, chemin_ressource: str = "") -> dict[str
 def routes(parametres: ParametresAuth) -> list[Route]:
     """Routes Starlette servant les métadonnées, en lecture seule et sans jeton."""
 
-    def _reponse(chemin_ressource: str):
-        async def handler(_request):
-            return JSONResponse(
-                document(parametres, chemin_ressource),
-                headers={
-                    # Document public et stable : un cache d'une heure évite de le
-                    # reconstruire à chaque tentative de connexion d'un client.
-                    "Cache-Control": "public, max-age=3600",
-                },
-            )
-
-        return handler
+    async def handler(_request):
+        return JSONResponse(
+            document(parametres),
+            headers={
+                # Document public et stable : un cache d'une heure évite de le
+                # reconstruire à chaque tentative de connexion d'un client.
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
 
     return [
-        Route(CHEMIN_METADONNEES, _reponse(""), methods=["GET"]),
-        Route(f"{CHEMIN_METADONNEES}/mcp", _reponse("/mcp"), methods=["GET"]),
-        Route(f"{CHEMIN_METADONNEES}/sse", _reponse("/sse"), methods=["GET"]),
+        # Aucune redirection 3xx : les deux chemins RÉPONDENT, avec le même corps.
+        Route(f"{CHEMIN_METADONNEES}{CHEMIN_RESSOURCE}", handler, methods=["GET"]),
+        Route(CHEMIN_METADONNEES, handler, methods=["GET"]),
     ]

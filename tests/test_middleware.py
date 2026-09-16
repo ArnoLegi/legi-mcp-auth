@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from .conftest import JETON_ADMIN, URL_PUBLIQUE, Autorite
+from .conftest import JETON_ADMIN, SCOPE_COMPLET, URL_PUBLIQUE, Autorite
 
 APPEL_OUTIL = {
     "jsonrpc": "2.0",
@@ -50,12 +50,16 @@ async def test_forme_exacte_du_401(client, parametres):
     reponse = await client.post("/mcp", json=APPEL_OUTIL)
     assert reponse.status_code == 401
 
+    # L'adresse des métadonnées porte le chemin de la ressource (RFC 9728), et la portée
+    # est bâtie sur la ressource elle-même — pas sur `api://<client-id>`.
     attendu = (
-        f'Bearer resource_metadata="{URL_PUBLIQUE}/.well-known/oauth-protected-resource", '
-        f'scope="{parametres.scope_complet}", '
+        f'Bearer resource_metadata="{URL_PUBLIQUE}/.well-known/oauth-protected-resource/mcp", '
+        f'scope="{SCOPE_COMPLET}", '
         f'error="invalid_token"'
     )
     assert reponse.headers["www-authenticate"] == attendu
+    assert parametres.scope_complet == SCOPE_COMPLET
+    assert "api://" not in reponse.headers["www-authenticate"]
     assert reponse.headers["content-type"].startswith("application/json")
     assert reponse.headers["cache-control"] == "no-store"
 
@@ -64,6 +68,7 @@ async def test_forme_exacte_du_401(client, parametres):
     assert corps["resource_metadata"] == parametres.url_metadonnees
     assert corps["scope"] == parametres.scope_complet
     assert corps["error_description"]
+    assert "api://" not in reponse.text
 
 
 @pytest.mark.parametrize(

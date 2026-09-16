@@ -7,7 +7,8 @@ Un contrôle omis ici est une porte ouverte. Sont vérifiés, dans cet ordre :
    HS256 en utilisant la clé publique comme secret) ;
 2. la signature, avec la clé publique du tenant désignée par `kid` ;
 3. `iss` = https://login.microsoftonline.com/<tenant>/v2.0 ;
-4. `aud` ∈ audiences acceptées (client ID nu ou `api://<client-id>`) ;
+4. `aud` ∈ audiences acceptées (client ID nu, `api://<client-id>`, ou la ressource
+   canonique du serveur) ;
 5. `exp` / `nbf`, avec 60 secondes de tolérance d'horloge ;
 6. `tid` = tenant attendu — sans lui, un jeton d'un AUTRE annuaire Entra portant la
    bonne audience passerait (le fameux « everyone is an admin » multi-tenant) ;
@@ -16,6 +17,9 @@ Un contrôle omis ici est une porte ouverte. Sont vérifiés, dans cet ordre :
 
 Le motif exact d'un refus reste ici et dans les journaux : la réponse HTTP, elle, ne dit
 jamais pourquoi (un attaquant apprendrait quoi corriger à chaque essai).
+
+S'y ajoute une ligne de CONTRÔLE, une seule par processus, au premier jeton accepté :
+elle porte `aud`, `scp` et `ver`, et rien d'autre. Cf. `_journaliser_controle`.
 """
 from __future__ import annotations
 
@@ -49,6 +53,8 @@ class ValidateurEntra:
     ) -> None:
         self.parametres = parametres
         self.jwks = cache_jwks or CacheJWKS(parametres.url_jwks, ttl=parametres.jwks_ttl)
+        #: Drapeau de la ligne de contrôle : une seule par instance, donc par processus.
+        self._controle_journalise = False
 
     async def valider(self, jeton: str) -> dict[str, Any]:
         """Renvoie les revendications du jeton, ou lève `JetonRefuse`."""
@@ -124,7 +130,31 @@ class ValidateurEntra:
                     )
                 raise JetonRefuse("aucun groupe autorisé dans la revendication `groups`")
 
+        self._journaliser_controle(revendications)
         return revendications
+
+    def _journaliser_controle(self, revendications: dict[str, Any]) -> None:
+        """Une ligne, au PREMIER jeton accepté du processus : `aud`, `scp`, `ver`.
+
+        Permanente et minimale, elle sert à constater en préproduction ce qu'Entra émet
+        réellement, sans avoir à décoder un jeton à la main : `aud` = le client ID (donc
+        `ENTRA_AUDIENCE` n'a pas à être posée), `ver` = 2.0, `scp` = la portée du
+        serveur. Une fois par processus suffit — ces trois valeurs sont les mêmes pour
+        tous les jetons d'une même inscription, et une ligne par appel noierait l'audit.
+
+        Ne journalise JAMAIS le jeton, ni `oid`, `upn` ou `name` : cette ligne décrit une
+        CONFIGURATION, pas une personne. L'audit nominatif, lui, est ailleurs
+        (`legi_mcp_auth.audit`, une ligne par appel d'outil).
+        """
+        if self._controle_journalise:
+            return
+        self._controle_journalise = True
+        log.info(
+            "Premier jeton validé — contrôle de configuration : aud=%s scp=%s ver=%s",
+            revendications.get("aud"),
+            revendications.get("scp"),
+            revendications.get("ver"),
+        )
 
 
 def utilisateur_depuis_revendications(revendications: dict[str, Any]) -> dict[str, Any]:

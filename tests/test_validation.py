@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from legi_mcp_auth.jwks import CacheJWKS, JWKSIndisponible
 from legi_mcp_auth.validation import JetonRefuse, ValidateurEntra
 
-from .conftest import CLIENT_ID, GROUPE_AUTORISE, GROUPE_INTERDIT, TENANT, Autorite
+from .conftest import CLIENT_ID, GROUPE_AUTORISE, GROUPE_INTERDIT, RESSOURCE, SCOPE, TENANT, Autorite
 
 
 def _b64(donnees: bytes) -> str:
@@ -38,6 +38,16 @@ async def test_audience_uri_acceptee(validateur, autorite: Autorite):
     """Entra émet `aud` sous la forme `api://<client-id>` selon le manifeste."""
     jeton = autorite.jeton(audience=f"api://{CLIENT_ID}")
     assert await validateur.valider(jeton)
+
+
+async def test_audience_ressource_canonique_acceptee(validateur, autorite: Autorite):
+    """Tolérance : la ressource elle-même est acceptée en `aud`.
+
+    Un jeton v2.0 porte le client ID, et c'est ce qu'on attend ; accepter aussi la
+    ressource évite un 401 incompréhensible si Entra recopiait un jour le `resource`
+    demandé dans l'audience. Les formes historiques restent acceptées.
+    """
+    assert await validateur.valider(autorite.jeton(audience=RESSOURCE))
 
 
 async def test_jeton_expire(validateur, autorite: Autorite):
@@ -95,7 +105,18 @@ async def test_scope_different(validateur, autorite: Autorite):
 
 async def test_scope_parmi_plusieurs(validateur, autorite: Autorite):
     """`scp` est une liste séparée par des espaces : la portée requise doit y figurer."""
-    assert await validateur.valider(autorite.jeton(scope="profile mcp.access openid"))
+    assert await validateur.valider(autorite.jeton(scope=f"profile {SCOPE} openid"))
+
+
+async def test_scp_porte_la_portee_nue(validateur, autorite: Autorite):
+    """`scp` contient la portée NUE, jamais la portée complète.
+
+    Entra émet dans `scp` le nom de la portée seul (`mcp.access`), pas
+    `<resource>/mcp.access` : bâtir la portée publiée sur la ressource ne change donc
+    rien à ce qui est vérifié ici.
+    """
+    with pytest.raises(JetonRefuse, match="portée"):
+        await validateur.valider(autorite.jeton(scope=f"{RESSOURCE}/{SCOPE}"))
 
 
 async def test_groupe_autorise(parametres, autorite: Autorite, jwks):
@@ -158,7 +179,7 @@ async def test_alg_hs256_refuse(validateur, autorite: Autorite):
                 "aud": CLIENT_ID,
                 "tid": TENANT,
                 "exp": 9_999_999_999,
-                "scp": "mcp.access",
+                "scp": SCOPE,
             }
         ).encode()
     )
@@ -187,6 +208,62 @@ async def test_kid_absent(validateur, autorite: Autorite):
     jeton = jwt.encode({"exp": 9_999_999_999}, autorite.cles["cle-1"], algorithm="RS256")
     with pytest.raises(JetonRefuse, match="clé de signature inconnue"):
         await validateur.valider(jeton)
+
+
+# ---------------------------------------------------- journal de contrôle
+
+
+async def test_ligne_de_controle_au_premier_jeton(validateur, autorite: Autorite, caplog):
+    """Une ligne, et une seule, portant `aud`, `scp` et `ver` — rien d'autre.
+
+    Elle sert à constater en préproduction ce qu'Entra émet vraiment : `aud` = le client
+    ID (donc `ENTRA_AUDIENCE` n'a pas à être posée), `ver` = 2.0, `scp` = la portée du
+    serveur.
+    """
+    with caplog.at_level("INFO", logger="legi_mcp_auth.validation"):
+        await validateur.valider(autorite.jeton())
+    lignes = [e for e in caplog.records if "contrôle de configuration" in e.getMessage()]
+    assert len(lignes) == 1
+    message = lignes[0].getMessage()
+    assert f"aud={CLIENT_ID}" in message
+    assert f"scp={SCOPE}" in message
+    assert "ver=2.0" in message
+
+
+async def test_ligne_de_controle_une_seule_fois(validateur, autorite: Autorite, caplog):
+    """Deux jetons validés, une seule ligne : ces valeurs ne changent pas d'un appel à l'autre."""
+    with caplog.at_level("INFO", logger="legi_mcp_auth.validation"):
+        await validateur.valider(autorite.jeton())
+        await validateur.valider(autorite.jeton())
+        await validateur.valider(autorite.jeton(upn="autre@cabinet.example"))
+    lignes = [e for e in caplog.records if "contrôle de configuration" in e.getMessage()]
+    assert len(lignes) == 1
+
+
+async def test_ligne_de_controle_ne_porte_ni_jeton_ni_identite(
+    validateur, autorite: Autorite, caplog
+):
+    """Elle décrit une CONFIGURATION, pas une personne : ni le jeton, ni `oid`/`upn`/`name`."""
+    jeton = autorite.jeton()
+    with caplog.at_level("INFO", logger="legi_mcp_auth.validation"):
+        await validateur.valider(jeton)
+    message = next(
+        e.getMessage() for e in caplog.records if "contrôle de configuration" in e.getMessage()
+    )
+    assert jeton not in message
+    for fragment in jeton.split("."):
+        assert fragment not in message
+    for interdit in ("55555555-5555-5555-5555-555555555555", "avocat@cabinet.example", "Maître Test"):
+        assert interdit not in message
+
+
+async def test_aucune_ligne_de_controle_si_le_jeton_est_refuse(
+    validateur, autorite: Autorite, caplog
+):
+    with caplog.at_level("INFO", logger="legi_mcp_auth.validation"):
+        with pytest.raises(JetonRefuse):
+            await validateur.valider(autorite.jeton(expire_dans=-120))
+    assert "contrôle de configuration" not in caplog.text
 
 
 # ------------------------------------------------------------- rotation JWKS

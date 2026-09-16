@@ -27,9 +27,19 @@ from legi_mcp_auth.config import MODE_ENTRA
 from legi_mcp_auth.jwks import CacheJWKS
 from legi_mcp_auth.metadonnees import routes as routes_metadonnees
 
+# GUID entièrement fictifs et hôte `example.com` : aucune valeur du cabinet ne figure
+# dans ce dépôt public.
 TENANT = "11111111-1111-1111-1111-111111111111"
 CLIENT_ID = "22222222-2222-2222-2222-222222222222"
-URL_PUBLIQUE = "https://mcp-eurlex-production.up.railway.app"
+#: RACINE du service, sans `/mcp` — le paquet ajoute lui-même le chemin du transport.
+URL_PUBLIQUE = "https://mcp.example.com"
+#: L'unique ressource du serveur, telle que le client l'envoie à Entra (RFC 8707).
+RESSOURCE = f"{URL_PUBLIQUE}/mcp"
+#: Volontairement différent de `SCOPE_DEFAUT` : les tests doivent prouver que la portée
+#: configurée est bien celle qui est publiée, et non le défaut du paquet.
+SCOPE = "mcp.test"
+#: La portée telle qu'un client doit la demander : `<resource>/<portée>`.
+SCOPE_COMPLET = f"{RESSOURCE}/{SCOPE}"
 GROUPE_AUTORISE = "33333333-3333-3333-3333-333333333333"
 GROUPE_INTERDIT = "44444444-4444-4444-4444-444444444444"
 JETON_ADMIN = "jeton-administrateur-de-test-uniquement-0123456789"
@@ -77,7 +87,7 @@ class Autorite:
         algorithme: str = "RS256",
         tenant: str | None = None,
         audience: str | None = None,
-        scope: str | None = "mcp.access",
+        scope: str | None = SCOPE,
         groupes: list[str] | None = None,
         expire_dans: int = 3600,
         emis_il_y_a: int = 60,
@@ -148,7 +158,7 @@ def parametres() -> ParametresAuth:
         tenant_id=TENANT,
         client_id=CLIENT_ID,
         audience=CLIENT_ID,
-        scope_requis="mcp.access",
+        scope_requis=SCOPE,
         url_publique=URL_PUBLIQUE,
         jetons_admin=(JETON_ADMIN,),
     )
