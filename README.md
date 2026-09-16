@@ -278,13 +278,14 @@ par **`AADSTS9010010`**, avant même l'écran de connexion — il n'y a donc rie
 les journaux du serveur MCP, qui n'est jamais appelé.
 
 Conséquence côté inscription d'application : la portée doit être exposée **sous la forme
-`<resource>/<portée>`**, c'est-à-dire que l'URI d'ID d'application enregistré doit être
-l'URL `https` du serveur (`https://mcp.example.com/mcp`) et non `api://<client-id>`. Le
-document de métadonnées et le 401 annoncent alors la portée telle qu'elle est demandable
-*pour cette ressource*.
+`<resource>/<portée>`**, donc il faut **ajouter aux URI d'ID d'application** l'URL
+`https` du serveur, `https://mcp.example.com/mcp`. Une inscription en porte plusieurs :
+un par serveur MCP qu'elle sert, **plus `api://<client-id>`, l'URI par défaut, qui
+reste en place**. Rien à retirer. Le document de métadonnées et le 401 annoncent alors
+la portée telle qu'elle est demandable *pour cette ressource*.
 
-`api://<client-id>` ne disparaît pas pour autant : il reste **accepté en `aud`**, à côté
-du client ID nu et de la ressource canonique. C'est le seul endroit où il survit.
+`api://<client-id>` ne sert simplement plus à bâtir la portée : il **reste accepté en
+`aud`**, à côté du client ID nu et de la ressource canonique.
 
 Source : documentation Anthropic, « Troubleshooting connectors », section « Microsoft
 Entra ID rejects the resource value ».
@@ -353,7 +354,7 @@ Cinq points, et ce sont les cinq qui font échouer une bascule quand ils manquen
 | À vérifier | Où | Valeur |
 |---|---|---|
 | **URI de redirection** | *Authentification* → plateforme *Web* | `https://claude.ai/api/mcp/auth_callback` — celui qu'affiche Claude.ai à la création du connecteur. Le recopier depuis l'écran, ne pas le deviner. |
-| **URI d'ID d'application** | *Exposer une API* | **L'URL `https` de la ressource**, `https://mcp.example.com/mcp` — et non `api://<client-id>`. C'est ce qui permet à la portée demandée et au paramètre `resource` envoyé par le client de désigner la même application. Chaque serveur MCP a sa propre URL : chacun doit donc retrouver la sienne parmi les URI d'ID d'application de l'inscription qui le sert. |
+| **URI d'ID d'application** | *Exposer une API* | **Ajouter** l'URL `https` de la ressource, `https://mcp.example.com/mcp`, à la liste des URI d'ID d'application. C'est ce qui permet à la portée demandée et au paramètre `resource` envoyé par le client de désigner la même application. Une inscription en porte plusieurs : `api://<client-id>`, l'URI par défaut, **reste en place** — il ne sert plus qu'à l'audience — et chaque serveur MCP servi par l'inscription ajoute la sienne, puisque chacun a sa propre URL. |
 | **Portée exposée** | *Exposer une API* | Portée déléguée nommée exactement comme `ENTRA_SCOPE_REQUIS` (`mcp.access`), consentement *administrateurs et utilisateurs*. Publiée sous l'URI ci-dessus, elle se demande `https://mcp.example.com/mcp/mcp.access` — c'est cette chaîne-là que le serveur annonce dans son 401 et dans ses métadonnées. |
 | **`offline_access`** | *Autorisations d'API* → Microsoft Graph, déléguée | Sans elle, pas de jeton de rafraîchissement : le connecteur redemande une authentification toutes les heures. C'est l'oubli le plus courant, et il ne se voit qu'au bout d'une heure. |
 | **`accessTokenAcceptedVersion`** | *Manifeste* | `2`. À `null` (défaut), Entra émet des jetons v1.0 : `iss` vaut `https://sts.windows.net/<tenant>/`, que ce paquet refuse — il attend l'émetteur v2.0. Symptôme : 401 systématique, journal « émetteur invalide ». |
@@ -403,8 +404,8 @@ Ne pas éprouver sur un service que le cabinet utilise.
 Si l'écran Microsoft ne s'affiche jamais et que Claude.ai affiche `AADSTS9010010`, le
 serveur MCP n'est pas en cause — il n'a même pas été appelé. C'est que la portée
 demandée et le paramètre `resource` ne désignent pas la même application : vérifier
-l'URI d'ID d'application de l'inscription (étape 1) et `MCP_PUBLIC_URL`, qui ne doit pas
-se terminer par `/mcp`.
+les URI d'ID d'application de l'inscription (étape 1) et `MCP_PUBLIC_URL`, qui ne doit
+pas se terminer par `/mcp`.
 
 Un échec ici se corrige sur la préproduction, sans que personne ne s'en aperçoive.
 
@@ -514,7 +515,7 @@ jeton immédiatement et redéployer.
 |---|---|
 | Tout passe sans jeton | `MCP_AUTH_MODE` absent ou `off`. Le journal le dit au démarrage. |
 | Le serveur refuse de démarrer | Mode `entra` sans `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` ou `MCP_PUBLIC_URL` ; ou `MCP_PUBLIC_URL` se terminant par `/mcp` ou `/sse`. Volontaire : une panne visible vaut mieux qu'un serveur ouvert, ou qu'une ressource `…/mcp/mcp` qu'Entra refusera. |
-| `AADSTS9010010` côté Claude.ai, **avant** tout écran de connexion | La portée demandée et le paramètre `resource` ne désignent pas la même application. Le serveur MCP n'est pas en cause : il n'a pas été appelé. Vérifier que l'URI d'ID d'application de l'inscription est bien l'URL `https` du serveur (`https://mcp.example.com/mcp`) et que `MCP_PUBLIC_URL` est la racine, sans `/mcp`. |
+| `AADSTS9010010` côté Claude.ai, **avant** tout écran de connexion | La portée demandée et le paramètre `resource` ne désignent pas la même application. Le serveur MCP n'est pas en cause : il n'a pas été appelé. Vérifier que l'URL `https` du serveur (`https://mcp.example.com/mcp`) figure bien parmi les URI d'ID d'application de l'inscription et porte la portée, et que `MCP_PUBLIC_URL` est la racine, sans `/mcp`. |
 | La `resource` annoncée finit par `/mcp/mcp` | `MCP_PUBLIC_URL` porte déjà le chemin du transport. Depuis 0.3.0 le serveur refuse de démarrer dans ce cas ; avant, il servait ce document. |
 | 401 systématique avec un jeton frais | Lire le journal `legi_mcp_auth.middleware` : il donne le motif exact (audience, `tid`, portée, groupe…). |
 | `portée 'mcp.access' absente` | Le client demande `.default` ou une autre portée ; ou la portée n'est pas exposée dans l'inscription d'application. |
@@ -545,10 +546,10 @@ c'est le dépôt dont la sécurité compte le plus, il garde les clés des quatr
 ## Changements 0.3.0
 
 Cette version change les **chaînes publiées** — la portée annoncée et l'adresse des
-métadonnées. Ce n'est pas un correctif : il faut reprendre l'inscription d'application
-(URI d'ID d'application) et revérifier chaque connecteur. Motif : Entra v2.0 refuse par
-`AADSTS9010010` une portée `api://<client-id>/<portée>` demandée avec un `resource`
-`https`, et c'est ce que le paquet publiait.
+métadonnées. Ce n'est pas un correctif : il faut compléter l'inscription d'application
+(un URI d'ID d'application à ajouter, rien à retirer) et revérifier chaque connecteur.
+Motif : Entra v2.0 refuse par `AADSTS9010010` une portée `api://<client-id>/<portée>`
+demandée avec un `resource` `https`, et c'est ce que le paquet publiait.
 
 1. **Ressource canonique.** `CHEMIN_RESSOURCE = "/mcp"` et
    `ParametresAuth.resource_canonique` = `<MCP_PUBLIC_URL>/mcp`. C'est la **seule**
@@ -580,9 +581,11 @@ métadonnées. Ce n'est pas un correctif : il faut reprendre l'inscription d'app
    le client ID et `api://<client-id>`, sans en retirer aucun. Un jeton v2.0 porte le
    client ID en `aud` : c'est une tolérance, pas un changement d'attente.
 
-Ce qu'il faut faire en reprenant une installation existante : poser l'URI d'ID
-d'application de l'inscription à l'URL `https` du serveur, vérifier que `MCP_PUBLIC_URL`
-est la **racine**, et reconnecter chaque connecteur Claude.ai. Les modes `off` et
+Ce qu'il faut faire en reprenant une installation existante : **ajouter aux URI d'ID
+d'application** de l'inscription l'URL `https` du serveur (`https://mcp.example.com/mcp`)
+et y exposer la portée — `api://<client-id>` peut rester, il ne sert plus qu'à
+l'audience —, vérifier que `MCP_PUBLIC_URL` est la **racine**, et reconnecter chaque
+connecteur Claude.ai. Les modes `off` et
 `jetons` sont inchangés — en mode `jetons`, le 401 ne porte toujours ni
 `resource_metadata` ni `scope`.
 
