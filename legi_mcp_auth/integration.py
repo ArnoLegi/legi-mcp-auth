@@ -77,7 +77,7 @@ def proteger(
             parametres.scope_complet,
             ", ".join(parametres.groupes_autorises) or "tous",
             len(parametres.jetons_admin),
-            parametres.url_publique,
+            parametres.resource_canonique,
         )
     else:
         log.info(

@@ -26,6 +26,11 @@ AUTORITE = "https://login.microsoftonline.com"
 #: Chemin des métadonnées de ressource protégée, fixé par la RFC 9728.
 CHEMIN_METADONNEES = "/.well-known/oauth-protected-resource"
 
+#: Chemin du transport MCP, et donc de la SEULE ressource de ce serveur. La ressource
+#: canonique s'en déduit (`<MCP_PUBLIC_URL>/mcp`) : elle n'est jamais saisie à la main,
+#: pour qu'elle ne puisse pas diverger de l'URL que le client appelle réellement.
+CHEMIN_RESSOURCE = "/mcp"
+
 SCOPE_DEFAUT = "mcp.access"
 
 #: Tolérance d'horloge, en secondes, sur `exp` et `nbf`.
@@ -55,8 +60,8 @@ class ParametresAuth:
     scope_requis: str = SCOPE_DEFAUT
     #: Identifiants (GUID) des groupes Entra autorisés. Vide = aucun filtrage par groupe.
     groupes_autorises: tuple[str, ...] = ()
-    #: URL publique du serveur, sans barre oblique finale. Sert au champ `resource` des
-    #: métadonnées et à l'en-tête WWW-Authenticate.
+    #: URL publique du serveur — sa RACINE, sans barre oblique finale et sans `/mcp` :
+    #: le paquet ajoute lui-même `CHEMIN_RESSOURCE` pour former `resource_canonique`.
     url_publique: str = ""
     #: Jetons statiques acceptés tels quels en Authorization: Bearer.
     jetons_admin: tuple[str, ...] = field(default=(), repr=False)
@@ -94,21 +99,40 @@ class ParametresAuth:
         return f"{AUTORITE}/{self.tenant_id}/discovery/v2.0/keys"
 
     @property
+    def resource_canonique(self) -> str:
+        """La ressource — au sens de la RFC 8707 — que ce serveur protège.
+
+        C'est l'URL du transport MCP, sans barre finale, CALCULÉE depuis
+        `MCP_PUBLIC_URL` : exactement la valeur que le client MCP envoie à Entra dans le
+        paramètre `resource`. Il n'y en a qu'une, et elle ne se saisit pas — une valeur
+        saisie finirait par différer de l'URL réellement appelée.
+        """
+        return f"{self.url_publique}{CHEMIN_RESSOURCE}"
+
+    @property
     def audience_uri(self) -> str:
         """Audience sous forme d'URI d'ID d'application (`api://<guid>`).
 
-        Entra ID nomme les portées d'une API `api://<client-id>/<portée>`, jamais
-        `<client-id>/<portée>`. Un client ID nu est donc préfixé ici : c'est cette forme
-        qui part dans WWW-Authenticate et dans `scopes_supported`, sinon le client
-        demanderait une portée que l'autorité ne connaît pas.
+        Ne sert plus qu'aux AUDIENCES ACCEPTÉES, c'est-à-dire au `aud` toléré dans un
+        jeton. La portée, elle, ne se bâtit plus là-dessus : cf. `scope_complet`.
         """
         audience = self.audience or self.client_id
         return audience if "://" in audience else f"api://{audience}"
 
     @property
     def scope_complet(self) -> str:
-        """Portée complète telle qu'un client doit la demander à Entra ID."""
-        return f"{self.audience_uri}/{self.scope_requis}"
+        """Portée complète telle qu'un client doit la demander à Entra ID.
+
+        Bâtie sur `resource_canonique`, et non sur `api://<client-id>` : Entra v2.0
+        exige que la portée demandée et le paramètre `resource` (RFC 8707) désignent la
+        MÊME application. Une portée `api://<client-id>/<portée>` accompagnée d'un
+        `resource` en https est refusée par AADSTS9010010, avant même l'écran de
+        connexion. La portée doit donc être publiée sur l'inscription sous la forme
+        `<resource>/<portée>`, où `<resource>` est l'URI d'ID d'application https
+        enregistré — et c'est cette forme que le document de métadonnées annonce : la
+        portée telle qu'elle est demandable POUR CETTE RESSOURCE.
+        """
+        return f"{self.resource_canonique}/{self.scope_requis}"
 
     @property
     def audiences_acceptees(self) -> tuple[str, ...]:
@@ -118,6 +142,11 @@ class ParametresAuth:
         manifeste de l'application (`requestedAccessTokenVersion`, forme de la portée
         demandée). Les deux désignent la même application : les deux sont acceptées,
         pour qu'un changement de manifeste ne coupe pas le service.
+
+        `resource_canonique` s'y ajoute en dernier, par TOLÉRANCE : un jeton v2.0 porte
+        le client ID en `aud`, jamais l'URI de ressource, et l'attente reste celle-là.
+        L'accepter ne coûte rien et évite un 401 incompréhensible si un jour Entra
+        recopiait le `resource` demandé dans l'audience.
         """
         candidats: list[str] = []
         for brut in (self.audience, self.client_id):
@@ -126,13 +155,20 @@ class ParametresAuth:
             candidats.append(brut)
             if "://" not in brut:
                 candidats.append(f"api://{brut}")
+        if self.url_publique:
+            candidats.append(self.resource_canonique)
         # dédoublonnage en conservant l'ordre
         return tuple(dict.fromkeys(candidats))
 
     @property
     def url_metadonnees(self) -> str:
-        """URL des métadonnées de ressource protégée (RFC 9728)."""
-        return f"{self.url_publique}{CHEMIN_METADONNEES}"
+        """URL des métadonnées de ressource protégée de `resource_canonique` (RFC 9728).
+
+        La RFC 9728 insère `/.well-known/oauth-protected-resource` AVANT le chemin de la
+        ressource : les métadonnées de `https://serveur/mcp` vivent donc sous
+        `https://serveur/.well-known/oauth-protected-resource/mcp`.
+        """
+        return f"{self.url_publique}{CHEMIN_METADONNEES}{CHEMIN_RESSOURCE}"
 
 
 def _texte(nom: str, defaut: str = "") -> str:
@@ -251,6 +287,7 @@ def _verifier_entra(parametres: ParametresAuth) -> None:
         )
     if not parametres.scope_requis:
         raise ConfigurationAuthInvalide("ENTRA_SCOPE_REQUIS ne peut pas être vide.")
+    _verifier_url_racine(parametres.url_publique)
     if not parametres.url_publique.startswith(("https://", "http://localhost", "http://127.0.0.1")):
         raise ConfigurationAuthInvalide(
             f"MCP_PUBLIC_URL={parametres.url_publique!r} : une URL publique en HTTPS est "
@@ -261,3 +298,24 @@ def _verifier_entra(parametres: ParametresAuth) -> None:
             "MCP_PUBLIC_URL est en HTTP local (%s) : à réserver aux essais.",
             parametres.url_publique,
         )
+
+
+def _verifier_url_racine(url_publique: str) -> None:
+    """Refuse une `MCP_PUBLIC_URL` qui porte déjà le chemin du transport.
+
+    L'erreur est facile à faire — on colle l'URL du connecteur, qui finit par `/mcp` —
+    et son symptôme est illisible : le paquet ajoute `CHEMIN_RESSOURCE` à son tour, la
+    ressource annoncée devient `…/mcp/mcp`, et Entra refuse la demande d'autorisation
+    par AADSTS9010010 avant même l'écran de connexion. Mieux vaut ne pas démarrer.
+    """
+    for suffixe in (CHEMIN_RESSOURCE, "/sse"):
+        if url_publique.endswith(suffixe):
+            raise ConfigurationAuthInvalide(
+                f"MCP_PUBLIC_URL={url_publique!r} se termine par {suffixe!r} : il faut "
+                "la RACINE du service, pas l'URL du transport. Le paquet ajoute "
+                f"{CHEMIN_RESSOURCE!r} lui-même ; la valeur donnée produirait la "
+                f"ressource {url_publique}{CHEMIN_RESSOURCE}, qu'Entra refuse "
+                "(AADSTS9010010 : la portée demandée et le paramètre `resource` ne "
+                "désignent alors plus la même application). Posez "
+                f"MCP_PUBLIC_URL={url_publique[: -len(suffixe)]!r}."
+            )
