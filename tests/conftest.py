@@ -40,6 +40,11 @@ RESSOURCE = f"{URL_PUBLIQUE}/mcp"
 SCOPE = "mcp.test"
 #: La portée telle qu'un client doit la demander : `<resource>/<portée>`.
 SCOPE_COMPLET = f"{RESSOURCE}/{SCOPE}"
+#: Tout ce que le serveur publie : la portée de la ressource, puis `offline_access`,
+#: sans laquelle Entra ne délivre aucun jeton de rafraîchissement.
+SCOPES_PUBLIES = (SCOPE_COMPLET, "offline_access")
+#: Les mêmes, séparées par des espaces (RFC 6750), pour l'en-tête et le corps du 401.
+SCOPE_ENTETE = " ".join(SCOPES_PUBLIES)
 GROUPE_AUTORISE = "33333333-3333-3333-3333-333333333333"
 GROUPE_INTERDIT = "44444444-4444-4444-4444-444444444444"
 JETON_ADMIN = "jeton-administrateur-de-test-uniquement-0123456789"

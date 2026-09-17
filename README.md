@@ -13,6 +13,9 @@ appelle quel outil.
 La ressource protégée, au sens de la RFC 8707, est **unique** : `<MCP_PUBLIC_URL>/mcp`,
 l'URL du transport. La portée publiée se bâtit sur elle, `<resource>/<portée>` — et non
 sur `api://<client-id>`. Voir *[La forme de la portée](#la-forme-de-la-portée)*.
+`offline_access` est publiée à côté : sans elle, Entra ne délivre aucun jeton de
+rafraîchissement et la connexion expire au bout d'une heure — voir
+*[`offline_access`](#offline_access-ou-la-connexion-qui-expire-au-bout-dune-heure)*.
 
 **Il ne fait rien tant qu'il n'est pas configuré.** Sans `MCP_AUTH_MODE`, le
 branchement est neutre : aucun middleware, aucune route ajoutée, le serveur se comporte
@@ -247,7 +250,7 @@ Aucun détail sur la cause du refus n'apparaît dans la réponse : un attaquant 
 HTTP/1.1 401 Unauthorized
 content-type: application/json; charset=utf-8
 cache-control: no-store
-www-authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp", scope="https://mcp.example.com/mcp/mcp.access", error="invalid_token"
+www-authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp", scope="https://mcp.example.com/mcp/mcp.access offline_access", error="invalid_token"
 ```
 
 ```json
@@ -255,15 +258,15 @@ www-authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/
   "error": "invalid_token",
   "error_description": "Jeton d'accès absent ou invalide. Ce serveur MCP exige un jeton Bearer émis par Microsoft Entra ID. Voir le document de métadonnées indiqué par l'en-tête WWW-Authenticate pour l'autorité et la portée à demander.",
   "resource_metadata": "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
-  "scope": "https://mcp.example.com/mcp/mcp.access"
+  "scope": "https://mcp.example.com/mcp/mcp.access offline_access"
 }
 ```
 
 C'est cet en-tête qui déclenche tout : le client MCP y lit l'adresse des métadonnées, s'y
-rend, y trouve l'autorité et la portée, puis mène le flux OAuth sans configuration
-manuelle. Claude.ai lit **l'en-tête en priorité** : le `scope` qu'il porte et le
-`scopes_supported[0]` du document sont, au caractère près, la même valeur — un test le
-vérifie, car les deux ne valent que faites ensemble.
+rend, y trouve l'autorité et les portées, puis mène le flux OAuth sans configuration
+manuelle. Le `scope` de l'en-tête est une **liste séparée par des espaces** (RFC 6750) :
+découpée, elle rend `scopes_supported` à l'identique, ordre compris — un test le vérifie.
+Claude.ai lit **l'en-tête en priorité**, et les deux ne valent que faites ensemble.
 
 ### La forme de la portée
 
@@ -290,6 +293,49 @@ la portée telle qu'elle est demandable *pour cette ressource*.
 Source : documentation Anthropic, « Troubleshooting connectors », section « Microsoft
 Entra ID rejects the resource value ».
 
+### `offline_access`, ou la connexion qui expire au bout d'une heure
+
+> `offline_access` doit figurer **parmi les portées publiées**, et pas seulement parmi
+> les autorisations d'API de l'inscription. Ce sont **deux réglages distincts**, et le
+> second ne se voit qu'au bout d'une heure.
+
+Entra ne délivre un **jeton de rafraîchissement** que si `offline_access` figure dans le
+paramètre `scope` de la **requête d'autorisation**. Or Claude.ai ne demande que ce que le
+serveur publie : la portée du 401 et celle des métadonnées. Tant que le serveur ne
+publiait que `<resource>/<portée>`, la demande ne portait pas `offline_access`, Entra
+n'émettait qu'un jeton d'accès — durée **une heure** — et rien ne permettait de le
+renouveler.
+
+Le symptôme est déroutant parce qu'il est **différé et silencieux** : la connexion
+réussit, l'écran Microsoft s'affiche, les outils répondent. Une heure plus tard, et une
+heure seulement, Claude.ai affiche **« la connexion a expiré »** et redemande une
+authentification. Rien n'apparaît dans les journaux du serveur MCP, sinon des 401
+ordinaires sur un jeton périmé — ce qui est exact, et ne dit rien de la cause.
+
+Depuis 0.3.1, `PORTEES_OIDC = ("offline_access",)` est ajoutée à ce que le serveur
+publie, **après** la portée de la ressource :
+
+| | Valeur |
+|---|---|
+| `scopes_supported` | `["https://mcp.example.com/mcp/mcp.access", "offline_access"]` |
+| `scope` du 401 | `https://mcp.example.com/mcp/mcp.access offline_access` |
+
+L'ordre est porteur de sens : c'est la portée de la ressource qui **ouvre l'accès**,
+`offline_access` ne fait qu'obtenir le jeton de rafraîchissement. Un client qui n'en
+retiendrait qu'une doit retenir la première.
+
+**Publier n'est pas exiger.** `offline_access` ne figure jamais dans le `scp` d'un jeton
+d'accès — elle ne concerne que la délivrance du jeton de rafraîchissement. La validation
+n'a donc pas changé d'un caractère : elle cherche toujours `ENTRA_SCOPE_REQUIS`, et elle
+seule, dans `scp`. L'exiger refuserait tous les jetons.
+
+`openid`, `profile` et `email` ne sont **pas** publiées : elles ne servent qu'au jeton
+d'identité, dont ce serveur ne fait rien — il ne valide que le jeton d'accès, et
+l'identité de l'appelant lui vient des revendications de celui-ci. Les publier allongerait
+l'écran de consentement sans rien apporter. (Les poser en *autorisations d'API* sur
+l'inscription reste utile au flux OAuth lui-même : c'est un autre réglage, cf. la
+procédure de bascule.)
+
 ---
 
 ## Métadonnées de ressource protégée (RFC 9728)
@@ -306,7 +352,8 @@ d'où ce chemin pour la ressource `<serveur>/mcp`.
     "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0"
   ],
   "scopes_supported": [
-    "https://mcp.example.com/mcp/mcp.access"
+    "https://mcp.example.com/mcp/mcp.access",
+    "offline_access"
   ],
   "bearer_methods_supported": ["header"],
   "resource_documentation": "https://mcp.example.com/health"
@@ -356,7 +403,8 @@ Cinq points, et ce sont les cinq qui font échouer une bascule quand ils manquen
 | **URI de redirection** | *Authentification* → plateforme *Web* | `https://claude.ai/api/mcp/auth_callback` — celui qu'affiche Claude.ai à la création du connecteur. Le recopier depuis l'écran, ne pas le deviner. |
 | **URI d'ID d'application** | *Exposer une API* | **Ajouter** l'URL `https` de la ressource, `https://mcp.example.com/mcp`, à la liste des URI d'ID d'application. C'est ce qui permet à la portée demandée et au paramètre `resource` envoyé par le client de désigner la même application. Une inscription en porte plusieurs : `api://<client-id>`, l'URI par défaut, **reste en place** — il ne sert plus qu'à l'audience — et chaque serveur MCP servi par l'inscription ajoute la sienne, puisque chacun a sa propre URL. |
 | **Portée exposée** | *Exposer une API* | Portée déléguée nommée exactement comme `ENTRA_SCOPE_REQUIS` (`mcp.access`), consentement *administrateurs et utilisateurs*. Publiée sous l'URI ci-dessus, elle se demande `https://mcp.example.com/mcp/mcp.access` — c'est cette chaîne-là que le serveur annonce dans son 401 et dans ses métadonnées. |
-| **`offline_access`** | *Autorisations d'API* → Microsoft Graph, déléguée | Sans elle, pas de jeton de rafraîchissement : le connecteur redemande une authentification toutes les heures. C'est l'oubli le plus courant, et il ne se voit qu'au bout d'une heure. |
+| **`offline_access`, côté inscription** | *Autorisations d'API* → Microsoft Graph, déléguée | Sans elle, Entra n'a pas le droit de délivrer un jeton de rafraîchissement. |
+| **`offline_access`, côté serveur** | Rien à faire — **depuis 0.3.1** | Le serveur la **publie** dans `scopes_supported` et dans le `scope` du 401, sans quoi Claude.ai ne la demande pas et l'autorisation ci-dessus ne sert à rien. Les deux réglages vont ensemble ; l'oubli de l'un ou de l'autre donne le même symptôme, et il ne se voit qu'au bout d'une heure : « la connexion a expiré ». Sur une installation en 0.3.0, il faut donc **monter le paquet**, pas seulement revoir l'inscription. |
 | **`accessTokenAcceptedVersion`** | *Manifeste* | `2`. À `null` (défaut), Entra émet des jetons v1.0 : `iss` vaut `https://sts.windows.net/<tenant>/`, que ce paquet refuse — il attend l'émetteur v2.0. Symptôme : 401 systématique, journal « émetteur invalide ». |
 
 Ajouter aussi `openid` et `profile` (déléguées), et assigner les utilisateurs ou le
@@ -382,13 +430,15 @@ Ne pas éprouver sur un service que le cabinet utilise.
 3. Vérifier à la main, dans cet ordre :
    - `GET /health` → 200 (sinon Railway déclare le déploiement en échec et redémarre) ;
    - `GET /.well-known/oauth-protected-resource/mcp` → le document attendu, avec
-     `resource` = `<racine>/mcp` (une seule fois `/mcp`, jamais `/mcp/mcp`) et
-     `scopes_supported[0]` = `<racine>/mcp/<portée>` ;
+     `resource` = `<racine>/mcp` (une seule fois `/mcp`, jamais `/mcp/mcp`),
+     `scopes_supported[0]` = `<racine>/mcp/<portée>` et `scopes_supported[1]` =
+     `offline_access` — **deux entrées, dans cet ordre** ;
    - `GET /.well-known/oauth-protected-resource` → **le même document**, au caractère
      près, et un 200 direct (aucune redirection) ;
-   - `POST /mcp` sans jeton → 401 portant `WWW-Authenticate`, dont le `scope` est
-     **identique** à `scopes_supported[0]` ci-dessus. C'est cette valeur-là que
-     Claude.ai utilisera : si les deux diffèrent, s'arrêter ici ;
+   - `POST /mcp` sans jeton → 401 portant `WWW-Authenticate`, dont le `scope`, **découpé
+     sur les espaces**, rend `scopes_supported` à l'identique — donc
+     `<racine>/mcp/<portée> offline_access`. C'est cette valeur-là que Claude.ai
+     utilisera : si les deux diffèrent, s'arrêter ici ;
    - `POST /mcp` avec le jeton administrateur → 200.
 4. Créer dans Claude.ai un **connecteur de test** pointant sur ce service, avec le
    Client ID et le secret client de l'inscription. Se connecter : l'écran Microsoft
@@ -400,6 +450,26 @@ Ne pas éprouver sur un service que le cabinet utilise.
    validé : `aud` doit valoir le client ID, `ver` valoir `2.0`, et `scp` porter la
    portée du serveur. C'est le moyen le plus court de confirmer que `ENTRA_AUDIENCE`
    n'a pas à être posée.
+6. **Éprouver le renouvellement du jeton — 90 minutes.** C'est le seul essai qui prouve
+   que `offline_access` a produit un jeton de rafraîchissement, et il ne peut pas être
+   abrégé : le jeton d'accès dure une heure, et rien ne se voit avant.
+
+   - **Désactiver le connecteur de production** correspondant, s'il en existe un, le
+     temps de l'essai. Deux connecteurs servant les mêmes outils, Claude.ai peut appeler
+     l'autre, et l'essai ne prouverait alors rien.
+   - Dans **le chat Claude.ai** où l'outil vient de répondre, ne pas se reconnecter, ne
+     pas rouvrir le connecteur — laisser la conversation telle quelle.
+   - **Attendre 90 minutes**, pas 60 : le jeton vit une heure, et une marge est
+     nécessaire pour que l'expiration soit franchie sans ambiguïté.
+   - **Rappeler un outil dans ce même chat.** S'il répond sans rien demander, le
+     renouvellement a eu lieu : le client détenait un jeton de rafraîchissement et s'en
+     est servi. C'est le critère.
+   - S'il affiche **« la connexion a expiré »** et redemande une authentification, il
+     n'y a pas eu de jeton de rafraîchissement. Reprendre les **deux** réglages
+     `offline_access` de l'étape 1 : l'autorisation déléguée Graph sur l'inscription,
+     **et** la publication par le serveur — un serveur en 0.3.0 ne la publie pas, quelle
+     que soit l'inscription.
+   - Réactiver le connecteur de production.
 
 Si l'écran Microsoft ne s'affiche jamais et que Claude.ai affiche `AADSTS9010010`, le
 serveur MCP n'est pas en cause — il n'a même pas été appelé. C'est que la portée
@@ -520,7 +590,9 @@ jeton immédiatement et redéployer.
 | 401 systématique avec un jeton frais | Lire le journal `legi_mcp_auth.middleware` : il donne le motif exact (audience, `tid`, portée, groupe…). |
 | `portée 'mcp.access' absente` | Le client demande `.default` ou une autre portée ; ou la portée n'est pas exposée dans l'inscription d'application. |
 | `audience invalide` | Le client a demandé un jeton pour Graph et non pour notre API. Vérifier la portée demandée : `<MCP_PUBLIC_URL>/mcp/<portée>`. |
-| Le `scope` du 401 et `scopes_supported` diffèrent | Ne devrait plus arriver : un test impose l'égalité stricte. Si cela se produit, c'est qu'une portée est construite ailleurs que par `ParametresAuth.scope_complet`. |
+| **« La connexion a expiré » au bout d'une heure**, alors que tout fonctionnait | Aucun jeton de rafraîchissement n'a été délivré. Entra n'en émet un que si `offline_access` figure dans le `scope` de la requête d'autorisation, et Claude.ai ne demande que ce que le serveur publie. Deux causes possibles, à vérifier toutes les deux : le serveur est en **0.3.0 ou antérieur** et ne publie pas `offline_access` (monter le paquet) ; ou `offline_access` n'est pas une **autorisation déléguée Graph** sur l'inscription. Rien à chercher dans les journaux du serveur : il ne voit qu'un 401 ordinaire sur un jeton périmé. |
+| `scopes_supported` ne porte qu'une entrée | Serveur en 0.3.0 ou antérieur. Depuis 0.3.1 il en publie deux : la portée de la ressource, puis `offline_access`. |
+| Le `scope` du 401 et `scopes_supported` diffèrent | Ne devrait plus arriver : un test impose l'égalité stricte, le `scope` de l'en-tête découpé sur les espaces devant rendre `scopes_supported`. Si cela se produit, c'est qu'une portée est construite ailleurs que par `ParametresAuth.scopes_publies`. |
 | `JWKS indisponible` | `login.microsoftonline.com` injoignable depuis Railway. Le serveur refuse alors tout (choix délibéré : *fail closed*). |
 | `invalid_client` côté Claude.ai | Secret client Entra expiré. Rien à corriger sur le serveur MCP. |
 
@@ -542,6 +614,53 @@ tenant du cabinet ne figure dans le dépôt.
 
 La CI ajoute `pip-audit` (vulnérabilités des dépendances) et Dependabot hebdomadaire :
 c'est le dépôt dont la sécurité compte le plus, il garde les clés des quatre serveurs.
+
+## Changements 0.3.1
+
+Correctif de **session** : la connexion à un connecteur cessait de fonctionner au bout
+d'une heure, avec « la connexion a expiré ». Aucune chaîne existante ne change de forme
+— la portée de la ressource et l'adresse des métadonnées sont celles de 0.3.0 — mais une
+portée s'**ajoute** à ce que le serveur publie. Rien à reprendre sur l'inscription
+d'application si elle a été faite selon 0.3.0 ; il suffit de **monter le paquet et de
+redéployer**.
+
+1. **`offline_access` est publiée.** Nouvelle constante `PORTEES_OIDC =
+   ("offline_access",)`. Entra ne délivre un jeton de rafraîchissement que si le mot
+   figure dans le paramètre `scope` de la requête d'autorisation ; Claude.ai ne demande
+   que ce que le serveur publie. Non publiée, elle n'était jamais demandée : le jeton
+   d'accès durait une heure, sans moyen de le renouveler.
+2. **Deux nouvelles propriétés.** `ParametresAuth.scopes_publies` — un tuple,
+   `(scope_complet, "offline_access")`, la portée de la **ressource en premier** — et
+   `ParametresAuth.scope_entete`, les mêmes séparées par des espaces (RFC 6750 : le
+   paramètre `scope` de `WWW-Authenticate` est une liste).
+3. **`scopes_supported` en porte deux.** `["<resource>/<portée>", "offline_access"]`,
+   dans cet ordre. C'est la portée de la ressource qui ouvre l'accès ; un client qui n'en
+   retiendrait qu'une doit retenir la première.
+4. **Le 401 annonce la même liste.** Le `scope` de l'en-tête et le champ `scope` du corps
+   valent `scope_entete`. Le test d'égalité stricte de 0.3.0 est conservé, sous sa forme
+   de liste : le `scope` de l'en-tête, découpé sur les espaces, doit rendre
+   `scopes_supported` à l'identique, ordre compris.
+5. **La validation ne change pas.** `scope_complet` est **inchangée**, et `scp` doit
+   toujours porter `ENTRA_SCOPE_REQUIS`, elle seule. `offline_access` ne figure jamais
+   dans le `scp` d'un jeton d'accès : l'exiger refuserait tous les jetons. Publier n'est
+   pas exiger — un test l'impose.
+6. **`openid`, `profile` et `email` ne sont pas ajoutées.** Elles ne servent qu'au jeton
+   d'identité, dont ce serveur ne fait rien : il ne valide que le jeton d'accès, et
+   l'identité de l'appelant lui vient des revendications de celui-ci. Les publier
+   allongerait l'écran de consentement sans rien apporter.
+7. **Mode `jetons` inchangé.** Son 401 ne porte toujours ni `resource_metadata` ni
+   `scope`, et donc pas `offline_access` : sans autorité, il n'y a pas de jeton de
+   rafraîchissement à demander. Mode `off` inchangé lui aussi.
+8. **README.** La procédure de bascule porte la recette du renouvellement — 90 minutes,
+   dans le chat Claude.ai, connecteur de production désactivé — et le tableau de
+   l'inscription distingue les **deux** réglages `offline_access` : l'autorisation
+   déléguée Graph, et la publication par le serveur.
+
+Ce qu'il faut faire en reprenant une installation en 0.3.0 : **monter le paquet et
+redéployer**, puis vérifier que `scopes_supported` porte bien deux entrées. Les
+connecteurs Claude.ai obtiendront un jeton de rafraîchissement à leur **prochaine
+connexion** — un connecteur déjà connecté continue sur son jeton d'accès d'une heure,
+donc reconnecter pour en profiter tout de suite.
 
 ## Changements 0.3.0
 
@@ -593,6 +712,7 @@ connecteur Claude.ai. Les modes `off` et
 
 | Version | Contenu |
 |---|---|
+| `v0.3.1` | `offline_access` est **publiée** — dans `scopes_supported` et dans le `scope` du 401, après la portée de la ressource. Sans elle dans la requête d'autorisation, Entra ne délivre aucun jeton de rafraîchissement : la connexion tombait au bout d'une heure sur « la connexion a expiré ». Nouvelles propriétés `scopes_publies` et `scope_entete` ; `scope_complet` et la validation **inchangées** (publier n'est pas exiger). Modes `off` et `jetons` inchangés. **Rien à reprendre sur l'inscription** si elle suit 0.3.0 : monter le paquet, redéployer, reconnecter. |
 | `v0.3.0` | La portée publiée se bâtit sur la ressource (`<MCP_PUBLIC_URL>/mcp/<portée>`) et non sur `api://<client-id>`, qu'Entra refuse par `AADSTS9010010` quand le client envoie un `resource` `https`. Métadonnées déplacées sous `…/oauth-protected-resource/mcp`, route `…/sse` retirée, racine conservée servant le même document. Garde-fou au démarrage sur un `MCP_PUBLIC_URL` finissant par `/mcp` ou `/sse`. Ligne de contrôle `aud`/`scp`/`ver` au premier jeton validé. **Chaînes publiées modifiées** : reprendre l'inscription d'application et reconnecter les connecteurs. Modes `off` et `jetons` inchangés. |
 | `v0.2.0` | Nouveau mode `MCP_AUTH_MODE=jetons` : les jetons d'administration seuls, sans configuration Entra ni métadonnées OAuth, pour un serveur à usage restreint ou une préproduction. Refuse de démarrer si la liste est vide ou si un jeton fait moins de 32 caractères. Aucun changement de comportement pour les modes `off` et `entra`. |
 | `v0.1.1` | Correctif : une rotation de clé survenant dans les cinq minutes suivant le démarrage de la machine était bridée à tort (`time.monotonic()` part de zéro, et le sentinelle d'échec valait `0.0` — donc « échec à l'instant »). Sans effet en mode `off`. |

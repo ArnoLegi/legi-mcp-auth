@@ -8,7 +8,9 @@ Code) de découvrir seul l'autorité et la portée à demander.
 La ressource protégée, au sens de la RFC 8707, est unique : `<MCP_PUBLIC_URL>/mcp`. La
 portée publiée se bâtit sur elle — `<resource>/<portée>` — et non sur
 `api://<client-id>`, faute de quoi Entra refuse la demande d'autorisation par
-AADSTS9010010.
+AADSTS9010010. `offline_access` est publiée à côté : sans elle dans la demande
+d'autorisation, Entra ne délivre aucun jeton de rafraîchissement et la connexion expire
+au bout d'une heure.
 
 Branchement, dans le `main.py` du serveur :
 
@@ -43,7 +45,7 @@ from .metadonnees import document as document_metadonnees
 from .middleware import EntraAuthMiddleware
 from .validation import JetonRefuse, ValidateurEntra
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "CHEMIN_METADONNEES",

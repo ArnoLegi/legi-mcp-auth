@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from legi_mcp_auth import ConfigurationAuthInvalide, ParametresAuth, parametres_depuis_env
-from legi_mcp_auth.config import MODE_ENTRA, MODE_OFF
+from legi_mcp_auth.config import MODE_ENTRA, MODE_OFF, PORTEES_OIDC
 
 from .conftest import CLIENT_ID, RESSOURCE, TENANT, URL_PUBLIQUE
 
@@ -99,6 +99,56 @@ def test_valeurs_derivees():
     assert p.audience_uri == f"api://{CLIENT_ID}"
     # RFC 9728 : le suffixe well-known s'insère AVANT le chemin de la ressource.
     assert p.url_metadonnees == f"{URL_PUBLIQUE}/.well-known/oauth-protected-resource/mcp"
+
+
+def test_portees_publiees():
+    """La portée de la ressource EN PREMIER, `offline_access` ensuite.
+
+    `offline_access` n'est pas une portée de notre API : c'est la demande d'un jeton de
+    rafraîchissement, qu'Entra ne délivre que si le mot figure dans le `scope` de la
+    requête d'autorisation. Claude.ai ne demande que ce que le serveur publie : non
+    publiée, elle n'est jamais demandée, et la connexion expire au bout d'une heure.
+    """
+    p = ParametresAuth(
+        mode=MODE_ENTRA,
+        tenant_id=TENANT,
+        client_id=CLIENT_ID,
+        url_publique=URL_PUBLIQUE,
+    )
+    assert p.scopes_publies == (f"{RESSOURCE}/mcp.access", "offline_access")
+    # L'ordre est porteur de sens : l'accès vient de la portée de la ressource.
+    assert p.scopes_publies[0] == p.scope_complet
+    assert "offline_access" in p.scopes_publies
+    # RFC 6750 : `scope` est une liste séparée par des espaces.
+    assert p.scope_entete == f"{RESSOURCE}/mcp.access offline_access"
+    assert p.scope_entete.split(" ") == list(p.scopes_publies)
+
+
+def test_portees_oidc_limitees_au_rafraichissement():
+    """Seule `offline_access` est ajoutée : `openid`, `profile` et `email` ne servent à rien ici.
+
+    Ce serveur ne valide qu'un jeton d'ACCÈS ; le jeton d'identité ne l'intéresse pas.
+    Les publier allongerait l'écran de consentement sans rien apporter.
+    """
+    assert PORTEES_OIDC == ("offline_access",)
+
+
+def test_portee_publiee_nexige_rien_de_plus_du_jeton():
+    """Publier `offline_access` ne change PAS ce qui est exigé d'un jeton d'accès.
+
+    `scope_requis` — la seule valeur que la validation cherche dans `scp` — reste la
+    portée nue. Entra ne fait jamais figurer `offline_access` dans le `scp` d'un jeton
+    d'accès : l'exiger refuserait tous les jetons.
+    """
+    p = ParametresAuth(
+        mode=MODE_ENTRA,
+        tenant_id=TENANT,
+        client_id=CLIENT_ID,
+        url_publique=URL_PUBLIQUE,
+    )
+    assert p.scope_requis == "mcp.access"
+    assert "offline_access" not in p.scope_requis
+    assert p.scope_complet == f"{RESSOURCE}/mcp.access"
 
 
 def test_audiences_acceptees():

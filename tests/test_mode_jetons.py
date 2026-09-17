@@ -138,6 +138,10 @@ async def test_401_sans_metadonnees_oauth(client):
     assert "resource_metadata" not in corps
     assert "scope" not in corps
     assert "microsoftonline" not in reponse.text.lower()
+    # `offline_access` non plus : sans autorité, il n'y a pas de jeton de
+    # rafraîchissement à demander — le jeton d'administration ne périme pas.
+    assert "offline_access" not in reponse.text
+    assert "offline_access" not in reponse.headers["www-authenticate"]
 
 
 async def test_pas_de_route_de_metadonnees(client):

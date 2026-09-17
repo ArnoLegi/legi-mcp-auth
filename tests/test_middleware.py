@@ -5,7 +5,13 @@ import json
 
 import pytest
 
-from .conftest import JETON_ADMIN, SCOPE_COMPLET, URL_PUBLIQUE, Autorite
+from .conftest import (
+    JETON_ADMIN,
+    SCOPE_COMPLET,
+    SCOPE_ENTETE,
+    URL_PUBLIQUE,
+    Autorite,
+)
 
 APPEL_OUTIL = {
     "jsonrpc": "2.0",
@@ -50,15 +56,17 @@ async def test_forme_exacte_du_401(client, parametres):
     reponse = await client.post("/mcp", json=APPEL_OUTIL)
     assert reponse.status_code == 401
 
-    # L'adresse des métadonnées porte le chemin de la ressource (RFC 9728), et la portée
-    # est bâtie sur la ressource elle-même — pas sur `api://<client-id>`.
+    # L'adresse des métadonnées porte le chemin de la ressource (RFC 9728) ; la portée
+    # est bâtie sur la ressource elle-même — pas sur `api://<client-id>` — et
+    # `offline_access` la suit, séparée par une espace (RFC 6750 : `scope` est une liste).
     attendu = (
         f'Bearer resource_metadata="{URL_PUBLIQUE}/.well-known/oauth-protected-resource/mcp", '
-        f'scope="{SCOPE_COMPLET}", '
+        f'scope="{SCOPE_COMPLET} offline_access", '
         f'error="invalid_token"'
     )
     assert reponse.headers["www-authenticate"] == attendu
     assert parametres.scope_complet == SCOPE_COMPLET
+    assert parametres.scope_entete == SCOPE_ENTETE
     assert "api://" not in reponse.headers["www-authenticate"]
     assert reponse.headers["content-type"].startswith("application/json")
     assert reponse.headers["cache-control"] == "no-store"
@@ -66,7 +74,8 @@ async def test_forme_exacte_du_401(client, parametres):
     corps = reponse.json()
     assert corps["error"] == "invalid_token"
     assert corps["resource_metadata"] == parametres.url_metadonnees
-    assert corps["scope"] == parametres.scope_complet
+    assert corps["scope"] == parametres.scope_entete
+    assert corps["scope"].split(" ") == [SCOPE_COMPLET, "offline_access"]
     assert corps["error_description"]
     assert "api://" not in reponse.text
 
