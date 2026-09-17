@@ -119,6 +119,22 @@ async def test_scp_porte_la_portee_nue(validateur, autorite: Autorite):
         await validateur.valider(autorite.jeton(scope=f"{RESSOURCE}/{SCOPE}"))
 
 
+async def test_offline_access_ni_exigee_ni_genante(validateur, autorite: Autorite):
+    """`offline_access` est PUBLIÉE, jamais EXIGÉE : la validation ne la cherche pas.
+
+    Entra ne la fait pas figurer dans le `scp` d'un jeton d'accès — elle ne sert qu'à
+    obtenir un jeton de rafraîchissement. L'exiger refuserait tous les jetons ; sa
+    présence fortuite, à l'inverse, ne doit rien changer.
+    """
+    # Le cas réel : `scp` porte la portée du serveur, et `offline_access` n'y est pas.
+    assert await validateur.valider(autorite.jeton(scope=SCOPE))
+    # Et si un jour elle s'y trouvait, le jeton resterait accepté.
+    assert await validateur.valider(autorite.jeton(scope=f"{SCOPE} offline_access"))
+    # Seule, elle ne suffit pas : c'est la portée de la ressource qui donne l'accès.
+    with pytest.raises(JetonRefuse, match="portée"):
+        await validateur.valider(autorite.jeton(scope="offline_access"))
+
+
 async def test_groupe_autorise(parametres, autorite: Autorite, jwks):
     p = dataclasses.replace(parametres, groupes_autorises=(GROUPE_AUTORISE,))
     validateur = ValidateurEntra(p, cache_jwks=CacheJWKS(p.url_jwks, ttl=p.jwks_ttl))

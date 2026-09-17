@@ -33,6 +33,21 @@ CHEMIN_RESSOURCE = "/mcp"
 
 SCOPE_DEFAUT = "mcp.access"
 
+#: Portées OIDC publiées EN PLUS de celle de la ressource.
+#:
+#: `offline_access` n'est pas une portée de notre API : c'est la demande d'un JETON DE
+#: RAFRAÎCHISSEMENT. Entra n'en délivre un que si le mot figure dans le paramètre
+#: `scope` de la requête d'autorisation — et Claude.ai ne demande que ce que le serveur
+#: publie. Tant qu'elle n'était pas publiée, le client n'obtenait qu'un jeton d'accès
+#: d'une heure, sans moyen de le renouveler : au bout d'une heure, « la connexion a
+#: expiré », et l'utilisateur devait se reconnecter à la main.
+#:
+#: `openid`, `profile` et `email` ne sont PAS ajoutées : elles ne servent qu'au jeton
+#: d'identité, dont ce serveur ne fait rien — il ne valide que le jeton d'accès, et
+#: l'identité de l'appelant lui vient des revendications de celui-ci. Les publier
+#: étendrait l'écran de consentement sans rien apporter.
+PORTEES_OIDC: tuple[str, ...] = ("offline_access",)
+
 #: Tolérance d'horloge, en secondes, sur `exp` et `nbf`.
 TOLERANCE_HORLOGE = 60
 
@@ -133,6 +148,31 @@ class ParametresAuth:
         portée telle qu'elle est demandable POUR CETTE RESSOURCE.
         """
         return f"{self.resource_canonique}/{self.scope_requis}"
+
+    @property
+    def scopes_publies(self) -> tuple[str, ...]:
+        """Toutes les portées que le serveur annonce à ses clients.
+
+        La portée de la ressource EN PREMIER — c'est elle qui donne l'accès, et un
+        client qui n'en retiendrait qu'une doit retenir celle-là — puis `PORTEES_OIDC`,
+        c'est-à-dire `offline_access`.
+
+        Publier n'est pas exiger : `offline_access` ne revient jamais dans le `scp` du
+        jeton d'accès, et la validation ne la cherche pas (cf. `scope_requis`). Elle
+        n'est là que pour figurer dans la demande d'autorisation, faute de quoi Entra ne
+        délivre aucun jeton de rafraîchissement.
+        """
+        return (self.scope_complet, *PORTEES_OIDC)
+
+    @property
+    def scope_entete(self) -> str:
+        """`scopes_publies` sous la forme attendue par la RFC 6750 : séparées par des espaces.
+
+        C'est la valeur du paramètre `scope` de `WWW-Authenticate`, et celle du champ
+        `scope` du corps du 401. Claude.ai lit l'en-tête EN PRIORITÉ : ce qui n'y figure
+        pas n'a guère de chance d'être demandé à Entra.
+        """
+        return " ".join(self.scopes_publies)
 
     @property
     def audiences_acceptees(self) -> tuple[str, ...]:

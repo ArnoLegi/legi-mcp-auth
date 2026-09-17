@@ -160,16 +160,20 @@ class EntraAuthMiddleware:
         """
         p = self.parametres
         if p.entra_actif:
+            # RFC 6750 : `scope` est une LISTE séparée par des espaces. La portée de la
+            # ressource y vient en premier, `offline_access` ensuite — sans elle, Entra
+            # ne délivre pas de jeton de rafraîchissement et le client retombe au bout
+            # d'une heure sur « la connexion a expiré ».
             entete = (
                 f'Bearer resource_metadata="{p.url_metadonnees}", '
-                f'scope="{p.scope_complet}", '
+                f'scope="{p.scope_entete}", '
                 f'error="invalid_token"'
             )
             charge = {
                 "error": "invalid_token",
                 "error_description": MESSAGE_401_ENTRA,
                 "resource_metadata": p.url_metadonnees,
-                "scope": p.scope_complet,
+                "scope": p.scope_entete,
             }
         else:
             entete = 'Bearer error="invalid_token"'

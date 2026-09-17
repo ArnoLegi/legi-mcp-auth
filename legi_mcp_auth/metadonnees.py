@@ -31,9 +31,11 @@ def document(parametres: ParametresAuth) -> dict[str, Any]:
     return {
         "resource": parametres.resource_canonique,
         "authorization_servers": [parametres.issuer],
-        # La portée telle qu'elle est demandable POUR CETTE RESSOURCE : `<resource>/<portée>`.
-        # La même valeur, au caractère près, que le paramètre `scope` du 401.
-        "scopes_supported": [parametres.scope_complet],
+        # Les portées que le client doit demander : celle de la RESSOURCE en premier
+        # (`<resource>/<portée>`), puis `offline_access`, sans laquelle Entra ne délivre
+        # aucun jeton de rafraîchissement et la session expire au bout d'une heure.
+        # La même liste, au caractère près, que le paramètre `scope` du 401.
+        "scopes_supported": list(parametres.scopes_publies),
         "bearer_methods_supported": ["header"],
         "resource_documentation": f"{parametres.url_publique}/health",
     }
