@@ -387,6 +387,83 @@ qui permettra de dire qui a consulté quoi.
 
 ---
 
+## Journalisation : à la charge du serveur hôte
+
+> Le paquet n'installe **aucun gestionnaire** de journalisation et ne règle **aucun
+> niveau**. Si le serveur hôte ne configure pas la racine, l'audit est **muet** — et
+> rien ne le signale.
+
+Tout passe par le module `logging` standard, sur les journaliseurs `legi_mcp_auth`,
+`legi_mcp_auth.validation`, `legi_mcp_auth.middleware` et `legi_mcp_auth.audit` (plus
+`legi_mcp_auth.config` et `legi_mcp_auth.jwks`). Le paquet s'arrête là, volontairement :
+une bibliothèque qui toucherait au journaliseur racine écraserait la configuration de
+son hôte.
+
+### Ce qui sort quand l'hôte ne configure rien
+
+La racine reste alors à `WARNING`, sans gestionnaire. Seuls les `WARNING` sortent — par
+`logging.lastResort`, sur `stderr`, sans horodatage — dont « AUTHENTIFICATION
+DÉSACTIVÉE » du mode `off`. **Tous les `INFO` sont écartés** :
+
+| Ligne | Niveau | Sans configuration de l'hôte |
+|---|---|---|
+| « AUTHENTIFICATION DÉSACTIVÉE » (mode `off`) | `WARNING` | sort, sur `stderr`, sans horodatage |
+| « Authentification Entra ID ACTIVE » (bandeau de démarrage) | `INFO` | **écartée** |
+| « Premier jeton validé » (contrôle de configuration) | `INFO` | **écartée** |
+| `utilisateur=… outil=…` (chaque appel d'outil) | `INFO` | **écartée** |
+
+La garde, elle, fonctionne : les 401 sont émis, les jetons validés, les outils protégés.
+Seule la trace disparaît. Un serveur dans cet état est correctement fermé et sans audit —
+et l'absence de lignes ressemble en tout point à l'absence d'appels.
+
+### Ce qu'un serveur hôte doit faire
+
+Avant `proteger()`, au chargement du module :
+
+```python
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+```
+
+C'est nécessaire quel que soit le cadre qui porte le serveur :
+
+| Cadre | Ce qu'il configure | `basicConfig` |
+|---|---|---|
+| `fastmcp` | son propre journaliseur seul, en `propagate=False` ; la racine n'est pas touchée | **nécessaire** |
+| `uvicorn` (`log_level`) | les journaliseurs `uvicorn.*` seuls | **nécessaire** |
+| SDK `mcp` | rien sur la racine | **nécessaire** |
+
+### Contrôle après déploiement
+
+Au démarrage, en mode `entra`, cette ligne `INFO` **doit** apparaître dans les journaux :
+
+```
+Authentification Entra ID ACTIVE — tenant=… audience=… portée=… groupes=… jetons_admin=… ressource=…
+```
+
+Un 401 conforme sur `/mcp` ne prouve que la garde — pas que quoi que ce soit s'enregistre.
+Exiger cette ligne dans tout contrôle à froid, au même titre que le 401 et les
+métadonnées.
+
+Cas vécu — **18/09/2026, `mcp-grimaldi`, fastmcp 4.0.5** : 401 et métadonnées conformes,
+et **zéro ligne `legi_mcp_auth`** au démarrage. Correctif : le `basicConfig` ci-dessus.
+Les premières lignes d'audit de ce serveur n'ont été écrites que **45 minutes après la
+bascule**.
+
+### « Premier jeton validé » n'est émise qu'une fois
+
+Une fois **par processus**, au premier JWT validé — jamais à chaque nouveau jeton, ni à
+chaque connecteur, ni après une rotation de secret. Son absence après un redémarrage
+signifie qu'aucun jeton n'a encore été validé depuis ; sa présence unique ne dit rien des
+appels suivants, que seul l'audit retrace. Une ligne par nouveau jeton est prévue
+(`legi-mcp-ops` #20).
+
+---
+
 ## Procédure de bascule
 
 Quatre temps, dans cet ordre. Le principe : **rien n'est activé en production avant
@@ -490,7 +567,10 @@ chacun, et **seulement une fois le précédent validé** :
    Le serveur refuse de démarrer si `MCP_PUBLIC_URL` se termine par `/mcp` ou `/sse` :
    c'est volontaire, la ressource `…/mcp/mcp` qui en résulterait serait refusée par
    Entra.
-2. Vérifier le 401 et les métadonnées comme en préproduction.
+2. Vérifier le 401 et les métadonnées comme en préproduction, **et exiger dans les
+   journaux la ligne `INFO` de démarrage** « Authentification Entra ID ACTIVE » : le 401
+   seul ne prouve que la garde, pas que l'audit s'enregistre — voir
+   *[Journalisation](#journalisation--à-la-charge-du-serveur-hôte)*.
 3. **Éditer le connecteur Claude.ai correspondant** : y renseigner le Client ID et le
    secret client. Un connecteur qui n'a pas été édité continuera d'appeler sans jeton
    et recevra des 401 — l'authentification ne se propage pas toute seule aux
