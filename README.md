@@ -462,6 +462,16 @@ signifie qu'aucun jeton n'a encore été validé depuis ; sa présence unique ne
 appels suivants, que seul l'audit retrace. Une ligne par nouveau jeton est prévue
 (`legi-mcp-ops` #20).
 
+### Champs venant du client
+
+Le chemin de la requête, le nom d'outil lu dans le corps JSON-RPC et le motif d'un refus
+(qui reprend le message de PyJWT) sont choisis, directement ou non, par le client. Ils
+sont assainis avant écriture : le chemin est ré-encodé (`/a b` devient `/a%20b`, un
+chemin réel comme `/mcp` ressort inchangé), les caractères de contrôle et sauts de ligne
+deviennent `?`, les espaces d'un nom d'outil deviennent `_`, et chaque champ est borné
+(chemin 200 caractères, motif 300, outil et utilisateur 100). Une requête produit donc
+au plus une ligne, et ses champs restent séparables.
+
 ---
 
 ## Procédure de bascule
@@ -792,6 +802,7 @@ connecteur Claude.ai. Les modes `off` et
 
 | Version | Contenu |
 |---|---|
+| `v0.3.2` | Journal : assainissement du chemin, du nom d'outil, du libellé et du motif de refus. Aucun changement de comportement HTTP ; les textes de motif sont inchangés. |
 | `v0.3.1` | `offline_access` est **publiée** — dans `scopes_supported` et dans le `scope` du 401, après la portée de la ressource. Sans elle dans la requête d'autorisation, Entra ne délivre aucun jeton de rafraîchissement : la connexion tombait au bout d'une heure sur « la connexion a expiré ». Nouvelles propriétés `scopes_publies` et `scope_entete` ; `scope_complet` et la validation **inchangées** (publier n'est pas exiger). Modes `off` et `jetons` inchangés. **Rien à reprendre sur l'inscription** si elle suit 0.3.0 : monter le paquet, redéployer, reconnecter. |
 | `v0.3.0` | La portée publiée se bâtit sur la ressource (`<MCP_PUBLIC_URL>/mcp/<portée>`) et non sur `api://<client-id>`, qu'Entra refuse par `AADSTS9010010` quand le client envoie un `resource` `https`. Métadonnées déplacées sous `…/oauth-protected-resource/mcp`, route `…/sse` retirée, racine conservée servant le même document. Garde-fou au démarrage sur un `MCP_PUBLIC_URL` finissant par `/mcp` ou `/sse`. Ligne de contrôle `aud`/`scp`/`ver` au premier jeton validé. **Chaînes publiées modifiées** : reprendre l'inscription d'application et reconnecter les connecteurs. Modes `off` et `jetons` inchangés. |
 | `v0.2.0` | Nouveau mode `MCP_AUTH_MODE=jetons` : les jetons d'administration seuls, sans configuration Entra ni métadonnées OAuth, pour un serveur à usage restreint ou une préproduction. Refuse de démarrer si la liste est vide ou si un jeton fait moins de 32 caractères. Aucun changement de comportement pour les modes `off` et `entra`. |
