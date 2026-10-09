@@ -10,6 +10,8 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import unicodedata
+from urllib.parse import quote
 from typing import Any, Awaitable, Callable, Iterable
 
 from .config import ParametresAuth
@@ -84,7 +86,7 @@ class EntraAuthMiddleware:
         jeton = _jeton_bearer(scope)
         if not jeton:
             log.info("401 %s %s : en-tête Authorization absent ou mal formé",
-                     scope.get("method"), chemin)
+                     scope.get("method"), _chemin_journal(chemin))
             await self._refuser(send)
             return
 
@@ -95,14 +97,18 @@ class EntraAuthMiddleware:
                 revendications = await self.validateur.valider(jeton)
             except JetonRefuse as exc:
                 # Le motif reste dans le journal ; la réponse, elle, ne dit rien.
-                log.warning("401 %s %s : %s", scope.get("method"), chemin, exc.motif)
+                log.warning(
+                    "401 %s %s : %s",
+                    scope.get("method"), _chemin_journal(chemin), _assainir(exc.motif, 300),
+                )
                 await self._refuser(send)
                 return
             utilisateur = utilisateur_depuis_revendications(revendications)
         else:
             # Mode « jetons » : rien d'autre à essayer, la liste est la seule référence.
             log.warning(
-                "401 %s %s : jeton inconnu (mode jetons)", scope.get("method"), chemin
+                "401 %s %s : jeton inconnu (mode jetons)",
+                scope.get("method"), _chemin_journal(chemin),
             )
             await self._refuser(send)
             return
@@ -143,8 +149,12 @@ class EntraAuthMiddleware:
             return receive
 
         corps, receive_rejouable = await _tamponner(receive, TAILLE_MAX_AUDIT)
+        libelle = _assainir(_libelle(utilisateur), 100)
         for outil in _outils_appeles(corps):
-            audit.info("utilisateur=%s outil=%s", _libelle(utilisateur), outil)
+            # Le nom d'outil vient du corps, donc du client : sans espace, il ne peut pas
+            # simuler un second champ `cle=valeur` sur la ligne d'audit.
+            nom = "".join("_" if c.isspace() else c for c in _assainir(outil, 100))
+            audit.info("utilisateur=%s outil=%s", libelle, nom)
         return receive_rejouable
 
     # -------------------------------------------------------------- réponses
@@ -292,3 +302,36 @@ def _libelle(utilisateur: dict[str, Any]) -> str:
     if utilisateur.get("admin"):
         return "admin"
     return utilisateur.get("preferred_username") or utilisateur.get("oid") or "inconnu"
+
+
+# ------------------------------------------------------------- journalisation
+
+
+def _assainir(texte: str, limite: int) -> str:
+    """Rend un texte venu du client inoffensif pour une ligne de journal.
+
+    Tout caractère de catégorie Unicode C* (contrôle, format, non assigné : saut de
+    ligne, retour chariot, tabulation, ESC…) devient « ? », de même que les séparateurs
+    de ligne et de paragraphe (Zl, Zp) : le texte tient alors sur une seule ligne et ne
+    peut pas en fabriquer une seconde. Au-delà de `limite` caractères, il est tronqué et
+    finit par « … ».
+    """
+    propre = "".join("?" if _hors_ligne(c) else c for c in str(texte))
+    if len(propre) > limite:
+        propre = propre[: limite - 1] + "…"
+    return propre
+
+
+def _hors_ligne(caractere: str) -> bool:
+    categorie = unicodedata.category(caractere)
+    return categorie[0] == "C" or categorie in ("Zl", "Zp")
+
+
+def _chemin_journal(chemin: str) -> str:
+    """Chemin de requête tel qu'il est journalisé : ré-encodé, puis borné.
+
+    uvicorn place dans `scope["path"]` le chemin DÉCODÉ — `%0A`, `%20` et `%3A` y sont
+    redevenus saut de ligne, espace et deux-points. On le ré-encode : un chemin légitime
+    (`/mcp`, `/health`, `/.well-known/…`) ressort inchangé.
+    """
+    return _assainir(quote(chemin, safe="/", errors="replace"), 200)
