@@ -27,13 +27,13 @@ exactement comme avant, avec un avertissement au démarrage. C'est voulu : le pa
 ## Installation
 
 ```bash
-pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.3.0
+pip install git+https://github.com/ArnoLegi/legi-mcp-auth@v0.3.2
 ```
 
 Dans un `requirements.txt` :
 
 ```
-legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.3.0
+legi-mcp-auth @ git+https://github.com/ArnoLegi/legi-mcp-auth@v0.3.2
 ```
 
 Le tag est **épinglé volontairement**. Ne jamais écrire `@main` : le code
